@@ -36,15 +36,15 @@ const upload = multer({
   limits: { fileSize: 400 * 1024 * 1024 },
 });
 
-// GET all assets or filter by assignedTo
+// GET all active assets or filter by assignedTo
 router.get('/', (req: Request, res: Response) => {
   const assignedTo = req.query.assignedTo;
 
-  let sql = 'SELECT * FROM assets';
+  let sql = 'SELECT * FROM assets WHERE deletedAt IS NULL';
   let params: any[] = [];
 
   if (assignedTo) {
-    sql = 'SELECT * FROM assets WHERE assignedTo = ?';
+    sql = 'SELECT * FROM assets WHERE assignedTo = ? AND deletedAt IS NULL';
     params = [assignedTo as string];
   }
 
@@ -57,9 +57,24 @@ router.get('/', (req: Request, res: Response) => {
   });
 });
 
-// GET a single asset by ID
+// GET soft-deleted assets (history) — register before GET /:id
+router.get('/history', (req: Request, res: Response) => {
+  db.all(
+    'SELECT * FROM assets WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC',
+    [],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json((rows || []).map(rowWithFiles));
+    }
+  );
+});
+
+// GET a single active asset by ID
 router.get('/:id', (req: Request, res: Response) => {
-  db.get('SELECT * FROM assets WHERE id = ?', [req.params.id], (err, row) => {
+  db.get('SELECT * FROM assets WHERE id = ? AND deletedAt IS NULL', [req.params.id], (err, row) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;
@@ -197,7 +212,7 @@ router.patch('/:id', (req: Request, res: Response) => {
     location = COALESCE(?, location),
     health = COALESCE(?, health),
     specifications = COALESCE(?, specifications)
-    WHERE id = ?`;
+    WHERE id = ? AND deletedAt IS NULL`;
   db.run(
     sql,
     [
@@ -224,34 +239,52 @@ router.patch('/:id', (req: Request, res: Response) => {
   );
 });
 
-// DELETE an asset
-router.delete('/:id', (req: Request, res: Response) => {
-  db.get('SELECT attachments FROM assets WHERE id = ?', [req.params.id], (err, row: any) => {
-    if (err) {
-      res.status(400).json({ error: err.message });
-      return;
+// POST restore a soft-deleted asset
+router.post('/:id/restore', (req: Request, res: Response) => {
+  const id = String(req.params.id ?? '').trim();
+  if (!id) {
+    res.status(400).json({ error: 'Invalid asset id.' });
+    return;
+  }
+  db.run(
+    `UPDATE assets SET deletedAt = NULL WHERE id = ? AND deletedAt IS NOT NULL`,
+    [id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Asset not found or not in deleted history.' });
+        return;
+      }
+      res.json({ restored: this.changes, id });
     }
-    let files: string[] = [];
-    try {
-      files = row?.attachments ? JSON.parse(String(row.attachments)) : [];
-      if (!Array.isArray(files)) files = [];
-    } catch {
-      files = [];
-    }
+  );
+});
 
-    db.run('DELETE FROM assets WHERE id = ?', [req.params.id], function (delErr) {
+// DELETE an asset (soft delete — attachments kept for restore)
+router.delete('/:id', (req: Request, res: Response) => {
+  const id = String(req.params.id ?? '').trim();
+  if (!id) {
+    res.status(400).json({ error: 'Invalid asset id.' });
+    return;
+  }
+  db.run(
+    `UPDATE assets SET deletedAt = CURRENT_TIMESTAMP WHERE id = ? AND deletedAt IS NULL`,
+    [id],
+    function(delErr) {
       if (delErr) {
         res.status(400).json({ error: delErr.message });
         return;
       }
-      if (this.changes > 0) {
-        for (const name of files) {
-          fs.unlink(path.join(UPLOADS_DIR, name), () => {});
-        }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Asset not found or already removed.' });
+        return;
       }
-      res.json({ deleted: this.changes });
-    });
-  });
+      res.json({ deleted: this.changes, id });
+    }
+  );
 });
 
 export default router;

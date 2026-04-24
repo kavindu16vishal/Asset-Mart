@@ -13,10 +13,14 @@ const dbGet = (sql: string, params: any[] = []): Promise<any> =>
 router.get('/stats', async (req: Request, res: Response) => {
   try {
     // Asset type distribution (for pie chart)
-    const assetTypes = await dbAll(`SELECT type, COUNT(*) as count FROM assets GROUP BY type`);
+    const assetTypes = await dbAll(
+      `SELECT type, COUNT(*) as count FROM assets WHERE deletedAt IS NULL GROUP BY type`
+    );
 
     // Maintenance status (for bar chart)
-    const maintenanceRows = await dbAll(`SELECT status, COUNT(*) as count FROM maintenance_tasks GROUP BY status`);
+    const maintenanceRows = await dbAll(
+      `SELECT status, COUNT(*) as count FROM maintenance_tasks WHERE deletedAt IS NULL GROUP BY status`
+    );
     const maintenanceData = [
       { status: 'Scheduled', count: 0 },
       { status: 'In Progress', count: 0 },
@@ -30,13 +34,14 @@ router.get('/stats', async (req: Request, res: Response) => {
     });
 
     // Live asset count for trend chart (using actual DB count instead of mock)
-    const totalAssetsRow = await dbGet(`SELECT COUNT(*) as total FROM assets`);
+    const totalAssetsRow = await dbGet(`SELECT COUNT(*) as total FROM assets WHERE deletedAt IS NULL`);
     const totalAssets = totalAssetsRow?.total || 0;
 
     // Issue count per month (using createdAt)
     const issuesByMonth = await dbAll(`
       SELECT strftime('%m', createdAt) as month_num, COUNT(*) as issues
       FROM issues
+      WHERE deletedAt IS NULL
       GROUP BY month_num
     `);
 
@@ -63,8 +68,8 @@ router.get('/stats', async (req: Request, res: Response) => {
     const upcomingAlert = await dbGet(`
       SELECT mt.*, a.name as assetName 
       FROM maintenance_tasks mt
-      LEFT JOIN assets a ON mt.assetId = a.id
-      WHERE mt.status IN ('Scheduled', 'In Progress') 
+      INNER JOIN assets a ON mt.assetId = a.id AND a.deletedAt IS NULL
+      WHERE mt.deletedAt IS NULL AND mt.status IN ('Scheduled', 'In Progress') 
       ORDER BY mt.scheduledDate ASC 
       LIMIT 1
     `);

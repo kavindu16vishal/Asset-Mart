@@ -16,6 +16,8 @@ export default function App() {
   const [userRole, setUserRole] = useState<'admin' | 'user'>('user');
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [activeTab, setActiveTab] = useState("");
+  const [dashboardDataRevision, setDashboardDataRevision] = useState(0);
+  const bumpDashboardDataRevision = () => setDashboardDataRevision((n) => n + 1);
 
   useEffect(() => {
     const applyTheme = () => {
@@ -58,21 +60,30 @@ export default function App() {
     if (userRole === 'admin') {
       switch (activeTab) {
         case "dashboard":
-          return <Dashboard />;
+          return <Dashboard dataRevision={dashboardDataRevision} />;
         case "assets":
-          return <AssetManagement />;
+          return <AssetManagement onAssetsDataChanged={bumpDashboardDataRevision} />;
         case "issues":
-          return <IssueReporting currentUser={currentUser} />;
+          return (
+            <IssueReporting currentUser={currentUser} onIssuesDataChanged={bumpDashboardDataRevision} />
+          );
         case "maintenance":
-          return <Maintenance onNavigate={setActiveTab} />;
+          return (
+            <Maintenance onNavigate={setActiveTab} onDataChanged={bumpDashboardDataRevision} />
+          );
         case "predictive-maintenance":
-          return <PredictiveMaintenance onNavigate={setActiveTab} />;
+          return (
+            <PredictiveMaintenance
+              onNavigate={setActiveTab}
+              onMaintenanceDataChanged={bumpDashboardDataRevision}
+            />
+          );
         case "users":
           return <UserManagement />;
         case "settings":
           return <Settings onLogout={handleLogout} />;
         default:
-          return <Dashboard />;
+          return <Dashboard dataRevision={dashboardDataRevision} />;
       }
     }
     
@@ -81,7 +92,9 @@ export default function App() {
       case "profile":
         return <UserProfile currentUser={currentUser} />;
       case "issues":
-        return <IssueReporting currentUser={currentUser} />;
+        return (
+          <IssueReporting currentUser={currentUser} onIssuesDataChanged={bumpDashboardDataRevision} />
+        );
       case "settings":
         return <Settings onLogout={handleLogout} />;
       default:

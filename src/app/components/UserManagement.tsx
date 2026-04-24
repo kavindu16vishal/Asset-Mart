@@ -8,7 +8,7 @@ export function UserManagement() {
   const [editUser, setEditUser] = useState<any>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
-  const [resetInfo, setResetInfo] = useState<{ userName: string; tempPassword: string; recoveryCodes: string[] } | null>(null);
+  const [resetInfo, setResetInfo] = useState<{ userName: string; recoveryCodes: string[] } | null>(null);
   const [userSearch, setUserSearch] = useState('');
 
   const filteredUsers = useMemo(() => {
@@ -44,6 +44,7 @@ export function UserManagement() {
         body: JSON.stringify({
           name: `${userData.firstName} ${userData.lastName}`,
           email: userData.email,
+          password: userData.password,
           role: userData.role || 'user',
           department: userData.department || 'Unassigned',
         }),
@@ -52,9 +53,12 @@ export function UserManagement() {
         const data = await res.json();
         fetchUsers();
         showSuccess('User added successfully!');
-        if (data?.tempPassword && Array.isArray(data?.recoveryCodes)) {
-          setResetInfo({ userName: data.name, tempPassword: data.tempPassword, recoveryCodes: data.recoveryCodes });
+        if (Array.isArray(data?.recoveryCodes)) {
+          setResetInfo({ userName: data.name, recoveryCodes: data.recoveryCodes });
         }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(typeof err.error === 'string' ? err.error : 'Could not create user.');
       }
     } catch (err) { console.error(err); }
   };
@@ -83,8 +87,10 @@ export function UserManagement() {
       const res = await fetch(`http://localhost:5000/api/users/${user.id}/admin-reset`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        setResetInfo({ userName: user.name, tempPassword: data.tempPassword, recoveryCodes: data.recoveryCodes || [] });
-        showSuccess('Password reset generated.');
+        setResetInfo({ userName: user.name, recoveryCodes: data.recoveryCodes || [] });
+        showSuccess('New recovery codes generated.');
+      } else {
+        alert(typeof data.error === 'string' ? data.error : 'Could not regenerate codes.');
       }
     } catch (err) {
       console.error(err);
@@ -240,7 +246,7 @@ export function UserManagement() {
                       <button
                         onClick={() => handleAdminReset(user)}
                         className="p-1.5 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg transition-colors border border-amber-200"
-                        title="Reset Password (Admin)"
+                        title="New recovery codes (password unchanged)"
                       >
                         <KeyRound className="w-4 h-4" />
                       </button>
@@ -265,20 +271,14 @@ export function UserManagement() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden">
             <div className="p-6 border-b border-gray-100">
-              <h2 className="text-xl font-bold text-gray-900">User access reset</h2>
+              <h2 className="text-xl font-bold text-gray-900">Recovery codes</h2>
               <p className="text-sm text-gray-600 mt-1">
-                Share these with <span className="font-medium">{resetInfo.userName}</span> securely.
+                Share with <span className="font-medium">{resetInfo.userName}</span> securely. Their login password is unchanged.
               </p>
             </div>
             <div className="p-6 space-y-4">
               <div>
-                <p className="text-sm font-semibold text-gray-900 mb-1">Temporary password</p>
-                <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg font-mono text-sm">
-                  {resetInfo.tempPassword}
-                </div>
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-gray-900 mb-2">Recovery codes (one-time)</p>
+                <p className="text-sm font-semibold text-gray-900 mb-2">New recovery codes (one-time each)</p>
                 <div className="grid grid-cols-2 gap-2">
                   {resetInfo.recoveryCodes.map((c) => (
                     <div key={c} className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg font-mono text-sm">
@@ -291,7 +291,7 @@ export function UserManagement() {
                 onClick={async () => {
                   try {
                     await navigator.clipboard.writeText(
-                      `Temp password: ${resetInfo.tempPassword}\n\nRecovery codes:\n${resetInfo.recoveryCodes.join('\n')}`
+                      `Recovery codes for ${resetInfo.userName}:\n${resetInfo.recoveryCodes.join('\n')}`
                     );
                   } catch {
                     // ignore

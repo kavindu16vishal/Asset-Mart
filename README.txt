@@ -28,13 +28,9 @@ The backend uses SQLite. When you start the server for the first time, it will a
    ```bash
    npm install
    ```
-3. Set up the Environment Variables for the **AI Assistant**:
-   - Inside the `backend` folder, create a file named `.env`
-   - Add your preferred AI provider's API key:
-     ```env
-     GEMINI_API_KEY=your_google_gemini_api_key_here
-     ```
-     *Alternatively, you can provide an OpenAI key (`OPENAI_API_KEY=your_openai_key`), and the backend will prioritize using ChatGPT.*
+3. Set up Environment Variables in `backend/.env` (see `backend/.env.example`):
+   - AI: `GEMINI_API_KEY` and/or `OPENAI_API_KEY`
+   - Optional transactional email (SMTP): see README.md section "Transactional email (SMTP)" for full variables (`SMTP_HOST`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`, etc.). Until set, the app runs without sending mail.
 4. Start the backend development server:
    ```bash
    npm run dev
@@ -61,6 +57,7 @@ The backend uses SQLite. When you start the server for the first time, it will a
 - **Asset Management**: Full tracking of hardware inventory, warranty dates, and performance.
 - **Predictive Maintenance**: ML-based 30-day risk scores (scikit-learn) from `ml/models/risk_30d.joblib`, with a heuristic if Python or the model is unavailable.
 - **Issue Tracking**: Submit tickets for broken hardware and upload screenshots.
+- **Email notifications** (optional): sign-in, new issue → admins, resolved → reporter. Configure SMTP in `backend/.env`; details in README.md.
 
 ---
 

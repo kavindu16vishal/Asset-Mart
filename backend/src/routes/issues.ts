@@ -7,6 +7,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
+import { getExtraAdminNotifyEmails, sendIssueResolvedEmail, sendNewIssueAdminEmail } from '../mail';
 
 const router = Router();
 
@@ -27,24 +28,38 @@ const upload = multer({
   limits: { fileSize: 400 * 1024 * 1024 },
 });
 
-// GET all issues or issues by userId
+function attachFilesToIssues(rows: any[] | null): any[] {
+  return (rows || []).map((r: any) => {
+    let files: string[] = [];
+    try {
+      files = r.attachments ? JSON.parse(String(r.attachments)) : [];
+      if (!Array.isArray(files)) files = [];
+    } catch {
+      files = [];
+    }
+    return { ...r, files };
+  });
+}
+
+// GET all active (non-deleted) issues or issues by userId
 router.get('/', (req: Request, res: Response) => {
   const userId = req.query.userId;
-  
+
   let sql = `
-    SELECT i.*, u.name as reporterName, u.email as reporterEmail 
-    FROM issues i 
-    LEFT JOIN users u ON i.reportedBy = u.id 
+    SELECT i.*, u.name as reporterName, u.email as reporterEmail
+    FROM issues i
+    LEFT JOIN users u ON i.reportedBy = u.id
+    WHERE i.deletedAt IS NULL
     ORDER BY i.createdAt DESC
   `;
   let params: any[] = [];
 
   if (userId) {
     sql = `
-      SELECT i.*, u.name as reporterName, u.email as reporterEmail 
-      FROM issues i 
-      LEFT JOIN users u ON i.reportedBy = u.id 
-      WHERE i.reportedBy = ? 
+      SELECT i.*, u.name as reporterName, u.email as reporterEmail
+      FROM issues i
+      LEFT JOIN users u ON i.reportedBy = u.id
+      WHERE i.reportedBy = ? AND i.deletedAt IS NULL
       ORDER BY i.createdAt DESC
     `;
     params = [userId];
@@ -55,17 +70,25 @@ router.get('/', (req: Request, res: Response) => {
       res.status(500).json({ error: err.message });
       return;
     }
-    const withAttachments = (rows || []).map((r: any) => {
-      let files: string[] = [];
-      try {
-        files = r.attachments ? JSON.parse(String(r.attachments)) : [];
-        if (!Array.isArray(files)) files = [];
-      } catch {
-        files = [];
-      }
-      return { ...r, files };
-    });
-    res.json(withAttachments);
+    res.json(attachFilesToIssues(rows));
+  });
+});
+
+// GET soft-deleted issues (history)
+router.get('/history', (req: Request, res: Response) => {
+  const sql = `
+    SELECT i.*, u.name as reporterName, u.email as reporterEmail
+    FROM issues i
+    LEFT JOIN users u ON i.reportedBy = u.id
+    WHERE i.deletedAt IS NOT NULL
+    ORDER BY i.deletedAt DESC
+  `;
+  db.all(sql, [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    res.json(attachFilesToIssues(rows));
   });
 });
 
@@ -103,8 +126,10 @@ router.post('/', (req: Request, res: Response) => {
         res.status(400).json({ error: runErr.message });
         return;
       }
+
+      const newIssueId = this.lastID;
       res.json({
-        id: this.lastID,
+        id: newIssueId,
         assetId,
         issueType,
         priority,
@@ -113,26 +138,157 @@ router.post('/', (req: Request, res: Response) => {
         reportedBy,
         files: uploaded,
       });
+
+      const reportedByStr =
+        reportedBy != null && String(reportedBy).trim() !== '' ? String(reportedBy).trim() : '';
+
+      const notifyAdmins = (reporter: { name?: string; email?: string } | null) => {
+        db.all(
+          `SELECT email FROM users WHERE lower(role) = 'admin' AND email IS NOT NULL AND trim(email) != ''`,
+          [],
+          (_e2, rows: any[]) => {
+            const fromDb = (rows || []).map((r) => String(r.email).trim()).filter(Boolean);
+            const merged = [...new Set([...fromDb, ...getExtraAdminNotifyEmails()])];
+            if (merged.length === 0) return;
+            void sendNewIssueAdminEmail({
+              to: merged,
+              issueId: newIssueId,
+              assetId: assetId ? String(assetId) : null,
+              issueType: String(issueType || 'Other'),
+              priority: String(priority || 'Medium'),
+              description: String(description || ''),
+              reporterName: reporter?.name ? String(reporter.name) : null,
+              reporterEmail: reporter?.email ? String(reporter.email) : null,
+              reporterUserId: reportedByStr || null,
+            }).catch((err) => console.error('[mail] new issue admin notify failed:', err));
+          }
+        );
+      };
+
+      if (reportedByStr) {
+        db.get(
+          'SELECT name, email FROM users WHERE id = ?',
+          [reportedByStr],
+          (_e3, u: any) => notifyAdmins(u || null)
+        );
+      } else {
+        notifyAdmins(null);
+      }
     });
   });
 });
 
-// DELETE an issue
+// POST restore a soft-deleted issue
+router.post('/:id/restore', (req: Request, res: Response) => {
+  const id = Number.parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid issue id.' });
+    return;
+  }
+  db.run(
+    `UPDATE issues SET deletedAt = NULL WHERE id = ? AND deletedAt IS NOT NULL`,
+    [id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Issue not found or not in deleted history.' });
+        return;
+      }
+      res.json({ restored: this.changes, id });
+    }
+  );
+});
+
+// DELETE an issue (soft delete — kept for history)
 router.delete('/:id', (req: Request, res: Response) => {
-  db.run('DELETE FROM issues WHERE id = ?', [req.params.id], function(err) {
-    if (err) { res.status(400).json({ error: err.message }); return; }
-    res.json({ deleted: this.changes });
-  });
+  const id = Number.parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid issue id.' });
+    return;
+  }
+  db.run(
+    `UPDATE issues SET deletedAt = CURRENT_TIMESTAMP WHERE id = ? AND deletedAt IS NULL`,
+    [id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Issue not found or already removed.' });
+        return;
+      }
+      res.json({ deleted: this.changes, id });
+    }
+  );
 });
 
 // PATCH update issue status
 router.patch('/:id', (req: Request, res: Response) => {
-  const { status } = req.body;
-  db.run('UPDATE issues SET status = ? WHERE id = ?', [status, req.params.id], function(err) {
-    if (err) { res.status(400).json({ error: err.message }); return; }
-    if (this.changes === 0) { res.status(404).json({ error: 'Issue not found' }); return; }
-    res.json({ updated: this.changes });
-  });
+  const id = Number.parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid issue id.' });
+    return;
+  }
+  const newStatus = String(req.body?.status ?? '').trim();
+  if (!newStatus) {
+    res.status(400).json({ error: 'status is required' });
+    return;
+  }
+
+  db.get(
+    `SELECT i.id, i.status, i.assetId, i.issueType, i.priority, i.description, i.reportedBy,
+            u.name as reporterName, u.email as reporterEmail
+     FROM issues i
+     LEFT JOIN users u ON i.reportedBy = u.id
+     WHERE i.id = ? AND i.deletedAt IS NULL`,
+    [id],
+    (err, row: any) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      if (!row) {
+        res.status(404).json({ error: 'Issue not found' });
+        return;
+      }
+
+      const prevStatus = String(row.status ?? '');
+
+      db.run(
+        'UPDATE issues SET status = ? WHERE id = ? AND deletedAt IS NULL',
+        [newStatus, id],
+        function(updateErr) {
+          if (updateErr) {
+            res.status(400).json({ error: updateErr.message });
+            return;
+          }
+          if (this.changes === 0) {
+            res.status(404).json({ error: 'Issue not found' });
+            return;
+          }
+          res.json({ updated: this.changes });
+
+          const becameResolved = newStatus === 'Resolved' && prevStatus !== 'Resolved';
+          const reporterEmail = row.reporterEmail ? String(row.reporterEmail).trim() : '';
+          if (becameResolved && reporterEmail) {
+            void sendIssueResolvedEmail({
+              to: reporterEmail,
+              userName: row.reporterName ? String(row.reporterName) : null,
+              issueId: id,
+              assetId: row.assetId ? String(row.assetId) : null,
+              issueType: String(row.issueType || ''),
+              priority: String(row.priority || ''),
+              description: String(row.description || ''),
+            }).catch((e) => console.error('[mail] issue resolved notify failed:', e));
+          }
+        }
+      );
+    }
+  );
 });
 
 let geminiAi: GoogleGenAI | null = null;

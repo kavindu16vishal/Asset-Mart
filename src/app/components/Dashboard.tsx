@@ -1,8 +1,13 @@
 import { AlertTriangle, CheckCircle, Clock, Package } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-export function Dashboard() {
+type DashboardProps = {
+  /** Increment when maintenance (or related) data changes elsewhere so stats/charts refetch. */
+  dataRevision?: number;
+};
+
+export function Dashboard({ dataRevision = 0 }: DashboardProps) {
   const [totalAssets, setTotalAssets] = useState(0);
   const [activeIssues, setActiveIssues] = useState(0);
   const [resolvedIssues, setResolvedIssues] = useState(0);
@@ -18,44 +23,65 @@ export function Dashboard() {
   });
 
   useEffect(() => {
-    // Fetch stat cards
-    fetch('http://localhost:5000/api/assets')
-      .then(res => res.json())
-      .then(data => setTotalAssets(data.length))
-      .catch(console.error);
+    const load = () => {
+      fetch('http://localhost:5000/api/assets')
+        .then((res) => res.json())
+        .then((data) => {
+          if (Array.isArray(data)) setTotalAssets(data.length);
+        })
+        .catch(console.error);
 
-    fetch('http://localhost:5000/api/issues')
-      .then(res => res.json())
-      .then(data => {
-        setActiveIssues(data.filter((i: any) => i.status === 'Pending' || i.status === 'In Progress').length);
-        setResolvedIssues(data.filter((i: any) => i.status === 'Resolved').length);
-        setRecentIssues(data.slice(0, 5));
-      })
-      .catch(console.error);
+      fetch('http://localhost:5000/api/issues')
+        .then((res) => res.json())
+        .then((data) => {
+          if (!Array.isArray(data)) return;
+          setActiveIssues(data.filter((i: any) => i.status === 'Pending' || i.status === 'In Progress').length);
+          setResolvedIssues(data.filter((i: any) => i.status === 'Resolved').length);
+          setRecentIssues(data.slice(0, 5));
+        })
+        .catch(console.error);
 
-    fetch('http://localhost:5000/api/maintenance')
-      .then(res => res.json())
-      .then(data => setPendingMaintenance(data.filter((t: any) => t.status === 'Scheduled' || t.status === 'In Progress').length))
-      .catch(console.error);
+      fetch('http://localhost:5000/api/maintenance')
+        .then((res) => res.json())
+        .then((data) => {
+          if (!Array.isArray(data)) return;
+          setPendingMaintenance(
+            data.filter((t: any) => t.status === 'Scheduled' || t.status === 'In Progress').length
+          );
+        })
+        .catch(console.error);
 
-    // Fetch live chart data from dashboard endpoint
-    fetch('http://localhost:5000/api/dashboard/stats')
-      .then(res => res.json())
-      .then(data => setChartData(data))
-      .catch(console.error);
+      // Merge into chart state so parallel analytics fetch cannot wipe maintenanceData (race fix).
+      fetch('http://localhost:5000/api/dashboard/stats')
+        .then((res) => res.json())
+        .then((data) => {
+          setChartData((prev: any) => ({
+            ...prev,
+            ...data,
+          }));
+        })
+        .catch(console.error);
 
-    // Fetch analytics charts that should appear on Dashboard
-    fetch('http://localhost:5000/api/analytics')
-      .then(res => res.json())
-      .then(data => {
-        setChartData((prev: any) => ({
-          ...prev,
-          departmentAssetData: data?.departmentAssetData ?? [],
-          issueResolutionData: data?.issueResolutionData ?? [],
-        }));
-      })
-      .catch(console.error);
-  }, []);
+      fetch('http://localhost:5000/api/analytics')
+        .then((res) => res.json())
+        .then((data) => {
+          setChartData((prev: any) => ({
+            ...prev,
+            departmentAssetData: data?.departmentAssetData ?? [],
+            issueResolutionData: data?.issueResolutionData ?? [],
+          }));
+        })
+        .catch(console.error);
+    };
+
+    load();
+  }, [dataRevision]);
+
+  const maintenanceChartKey = useMemo(() => {
+    const rows = chartData.maintenanceData;
+    if (!Array.isArray(rows) || rows.length === 0) return '0';
+    return rows.map((r: any) => `${r.status}:${r.count}`).join('|');
+  }, [chartData.maintenanceData]);
 
   const stats = [
     { label: 'Total Assets', value: totalAssets.toString(), icon: Package, color: 'bg-blue-500' },
@@ -190,7 +216,7 @@ export function Dashboard() {
         <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Maintenance Status</h3>
           <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData.maintenanceData}>
+            <BarChart key={maintenanceChartKey} data={chartData.maintenanceData ?? []}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="status" />
               <YAxis allowDecimals={false} />

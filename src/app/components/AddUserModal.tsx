@@ -42,6 +42,15 @@ export function AddUserModal({ isOpen, onClose, onSave }: AddUserModalProps) {
       return;
     }
 
+    if (!formData.password?.trim()) {
+      alert('Password is required (min. 6 characters)');
+      return;
+    }
+    if (formData.password.trim().length < 6) {
+      alert('Password must be at least 6 characters');
+      return;
+    }
+
     if (formData.password !== formData.confirmPassword) {
       alert('Passwords do not match');
       return;

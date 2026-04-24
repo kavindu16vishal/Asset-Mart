@@ -66,30 +66,23 @@ Success response:
 
 ---
 
-## Admin flow: Reset a user (temporary password + new recovery codes)
+## Admin flow: New recovery codes (login password unchanged)
 
-Use this when a user:
-- lost all recovery codes, or
-- needs immediate access restored.
+Use the key icon in **User Management** when a user **lost their recovery codes** and needs a fresh set.
 
-### 1) Reset from the Admin UI
+### 1) Regenerate codes from the Admin UI
 
 1. Login as an admin.
 2. Go to **User Management**.
 3. Find the user.
-4. Click the **Reset Password** (key icon) action.
-5. A modal will show:
-   - **Temporary password**
-   - **New recovery codes (10)**
-6. Share these securely with the user.
+4. Click **New recovery codes** (key icon).
+5. A modal shows **10 new one-time recovery codes**. Share them securely with the user.
 
-### 2) User logs in with the temporary password
+The user’s **account password is not changed**; they keep signing in with the same password as before.
 
-The user can login using:
-- their email
-- the temporary password provided by the admin
+### 2) Creating users in the Admin UI
 
-They should then change the password from Settings (or you can add a forced “change password” step if desired).
+**Add User** requires you to set an initial **password** (min. 6 characters). After the user is created, a one-time popup lists their **recovery codes** — same as self-registration.
 
 ---
 
@@ -129,13 +122,13 @@ The backend uses SQLite. When you start the server for the first time, it will a
    ```bash
    npm install
    ```
-3. Set up the Environment Variables for the **AI Assistant**:
-   - Inside the `backend` folder, create a file named `.env`
-   - Add your preferred AI provider's API key:
+3. Set up the Environment Variables in the `backend` folder (create a file named `.env` if it does not exist). You can start from `backend/.env.example`.
+   - **AI Assistant** (optional but recommended for chat/issue analysis):
      ```env
      GEMINI_API_KEY=your_google_gemini_api_key_here
      ```
      *Alternatively, you can provide an OpenAI key (`OPENAI_API_KEY=your_openai_key`), and the backend will prioritize using ChatGPT.*
+   - **Transactional email** (optional): see [Transactional email (SMTP)](#transactional-email-smtp) below. Until SMTP is configured, the API works normally and emails are skipped (a warning is logged).
 4. Start the backend development server:
    ```bash
    npm run dev
@@ -156,12 +149,61 @@ The backend uses SQLite. When you start the server for the first time, it will a
 
 ---
 
+## Transactional email (SMTP)
+
+The backend can send **transactional** messages via **Nodemailer** when SMTP environment variables are set. If they are missing (or email is turned off), **nothing breaks**—the server logs that email is disabled and continues.
+
+### What gets sent
+
+| Event | Recipient | Content |
+|--------|-----------|---------|
+| Successful **sign-in** | The user who logged in | Confirmation with date/time and a short security note |
+| **New issue** submitted | Every user with role `admin`, plus optional `ADMIN_NOTIFY_EMAILS` | Issue number, asset, type, priority, description, reporter details |
+| Issue marked **Resolved** | The **reporter** (linked user) | Original report summary and resolution notice |
+
+**Resolved** emails are sent only when:
+
+- The issue’s status changes **to** `Resolved` (not already resolved), and  
+- The issue has a **`reportedBy`** user with a valid **`users.email`** (the normal flow when a logged-in user submits a report).
+
+### Configuration
+
+1. Copy `backend/.env.example` to `backend/.env` (or merge the variables into your existing `.env`).
+2. Set SMTP and sender (example for Gmail—use an [App password](https://support.google.com/accounts/answer/185833), not your normal login password):
+
+   ```env
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_SECURE=false
+   SMTP_USER=your-address@gmail.com
+   SMTP_PASS=your-app-password
+   MAIL_FROM="Saranga <your-address@gmail.com>"
+   APP_NAME=Saranga
+   ```
+
+3. Optional — extra inboxes notified on **new issues only** (comma or semicolon separated):
+
+   ```env
+   ADMIN_NOTIFY_EMAILS=ops@company.com,lead@company.com
+   ```
+
+4. Restart the backend. On startup you should see either `Transactional email (SMTP) is enabled.` or a message that SMTP is not configured.
+
+### Disabling email without removing variables
+
+```env
+EMAIL_ENABLED=false
+```
+
+---
+
 ## Features
 - **Dashboard Overview**: View total assets, health status, and recent issues.
 - **AI Chatbot**: Intelligent chatbot powered by Gemini/OpenAI capable of context-aware interaction.
 - **Asset Management**: Full tracking of hardware inventory, warranty dates, and performance.
 - **Predictive Maintenance**: Risk scores and timelines driven by a **trained ML model** (30‑day risk), with a rule-based fallback if Python or the model file is missing.
 - **Issue Tracking**: Submit tickets for broken hardware and upload screenshots.
+- **Email notifications** (optional SMTP): sign-in alert, new-issue alerts to admins, resolved-issue notice to the reporter.
 
 ---
 

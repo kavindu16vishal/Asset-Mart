@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
 import crypto from 'crypto';
+import { sendLoginNotificationEmail } from '../mail';
 
 const router = Router();
 
@@ -16,9 +17,6 @@ const generateRecoveryCodes = (count = 10): string[] => {
 const hashCode = (code: string) =>
   crypto.createHash('sha256').update(code.trim().toUpperCase()).digest('hex');
 
-const generateTempPassword = () =>
-  `Temp-${crypto.randomBytes(6).toString('base64url')}`;
-
 // GET all users
 router.get('/', (req: Request, res: Response) => {
   db.all('SELECT id, name, email, role, department, status, lastActive FROM users', [], (err, rows) => {
@@ -33,22 +31,26 @@ router.get('/', (req: Request, res: Response) => {
 // POST a new user (Create admin or user manually from dashboard)
 router.post('/', (req: Request, res: Response) => {
   const { name, email, password, role, department, status, lastActive } = req.body;
-  const tempPassword = password || generateTempPassword();
+  const cleanPassword = String(password ?? '').trim();
+  if (!cleanPassword || cleanPassword.length < 6) {
+    res.status(400).json({ error: 'Password is required and must be at least 6 characters.' });
+    return;
+  }
   const recoveryCodes = generateRecoveryCodes(10);
   const recoveryCodesHash = JSON.stringify(recoveryCodes.map(hashCode));
   const sql = 'INSERT INTO users (name, email, password, role, department, status, lastActive, recoveryCodes, passwordResetRequired) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
   const params = [
     name,
     email,
-    tempPassword,
+    cleanPassword,
     role || 'user',
     department || 'Unassigned',
     status || 'Active',
     lastActive || 'Just now',
     recoveryCodesHash,
-    1
+    0
   ];
-  
+
   db.run(sql, params, function(err) {
     if (err) {
       res.status(400).json({ error: err.message });
@@ -56,9 +58,13 @@ router.post('/', (req: Request, res: Response) => {
     }
     res.json({
       id: this.lastID,
-      name, email, role, department, status, lastActive,
-      tempPassword,
-      recoveryCodes
+      name,
+      email,
+      role: params[3],
+      department: params[4],
+      status: params[5],
+      lastActive: params[6],
+      recoveryCodes,
     });
   });
 });
@@ -79,20 +85,19 @@ router.patch('/:id', (req: Request, res: Response) => {
   });
 });
 
-// POST /:id/admin-reset — generate temp password + new recovery codes
+// POST /:id/admin-reset — new recovery codes only (login password unchanged)
 router.post('/:id/admin-reset', (req: Request, res: Response) => {
   const userId = req.params.id;
-  const tempPassword = generateTempPassword();
   const recoveryCodes = generateRecoveryCodes(10);
   const recoveryCodesHash = JSON.stringify(recoveryCodes.map(hashCode));
 
   db.run(
-    'UPDATE users SET password = ?, passwordResetRequired = 1, recoveryCodes = ? WHERE id = ?',
-    [tempPassword, recoveryCodesHash, userId],
+    'UPDATE users SET recoveryCodes = ? WHERE id = ?',
+    [recoveryCodesHash, userId],
     function(err) {
       if (err) { res.status(400).json({ error: err.message }); return; }
       if (this.changes === 0) { res.status(404).json({ error: 'User not found' }); return; }
-      res.json({ tempPassword, recoveryCodes });
+      res.json({ recoveryCodes });
     }
   );
 });
@@ -221,6 +226,11 @@ router.post('/login', (req: Request, res: Response) => {
 
     const { password: _, recoveryCodes: __, ...userWithoutPassword } = user;
     db.run('UPDATE users SET lastActive = ? WHERE id = ?', ['Just now', user.id]);
+
+    void sendLoginNotificationEmail({
+      to: user.email,
+      userName: String(user.name || user.email || 'User'),
+    }).catch((e) => console.error('[mail] login notification failed:', e));
 
     res.json({
       message: 'Login successful',

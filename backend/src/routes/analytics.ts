@@ -28,7 +28,7 @@ router.get('/', async (req: Request, res: Response) => {
     const departmentAssetDataRaw = await runQueryAll(`
       SELECT department, COUNT(*) as count 
       FROM assets 
-      WHERE department IS NOT NULL 
+      WHERE department IS NOT NULL AND deletedAt IS NULL
       GROUP BY department
     `);
     const departmentAssetData = departmentAssetDataRaw.map(row => ({
@@ -39,7 +39,7 @@ router.get('/', async (req: Request, res: Response) => {
     // 2. Asset Lifecycle Summary
     // Categorize based on purchaseDate: New (0-1 yr), Active (1-3 yrs), Aging (3-5 yrs), End of Life (5+ yrs)
     const lifecycleRaw = await runQueryAll(`
-      SELECT purchaseDate FROM assets WHERE purchaseDate IS NOT NULL AND status != 'Retired'
+      SELECT purchaseDate FROM assets WHERE purchaseDate IS NOT NULL AND status != 'Retired' AND deletedAt IS NULL
     `);
     
     let newAssets = 0, activeAssets = 0, agingAssets = 0, eolAssets = 0;
@@ -68,7 +68,7 @@ router.get('/', async (req: Request, res: Response) => {
 
     // 3. Issue Resolution Rate (Mocked by week, enriched with live total real-time data)
     // We'll calculate real 'Resolved' and 'Pending' from issues
-    const issuesRaw = await runQueryAll(`SELECT status FROM issues`);
+    const issuesRaw = await runQueryAll(`SELECT status FROM issues WHERE deletedAt IS NULL`);
     let totalResolved = 0;
     let totalPending = 0;
     
@@ -90,7 +90,7 @@ router.get('/', async (req: Request, res: Response) => {
     const upcomingMaintenance = await runQueryAll(`
       SELECT assetId, type, description, scheduledDate 
       FROM maintenance_tasks 
-      WHERE status IN ('Scheduled', 'In Progress')
+      WHERE deletedAt IS NULL AND status IN ('Scheduled', 'In Progress')
       ORDER BY scheduledDate ASC 
       LIMIT 5
     `);

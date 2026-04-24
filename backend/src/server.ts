@@ -10,6 +10,7 @@ import maintenanceRouter from './routes/maintenance';
 import analyticsRouter from './routes/analytics';
 import dashboardRouter from './routes/dashboard';
 import { UPLOADS_DIR, ensureUploadsDir } from './uploadsDir';
+import { isEmailConfigured } from './mail';
 import './db'; // Initialize Database
 
 ensureUploadsDir();
@@ -42,4 +43,9 @@ app.get('/api/health', (req, res) => {
 // Start Server
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  if (isEmailConfigured()) {
+    console.log('Transactional email (SMTP) is enabled.');
+  } else {
+    console.log('Transactional email disabled: set SMTP_* and MAIL_FROM in .env (see .env.example).');
+  }
 });

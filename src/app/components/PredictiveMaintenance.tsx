@@ -26,9 +26,13 @@ interface Prediction {
 
 interface PredictiveMaintenanceProps {
   onNavigate?: (tab: string) => void;
+  onMaintenanceDataChanged?: () => void;
 }
 
-export function PredictiveMaintenance({ onNavigate }: PredictiveMaintenanceProps) {
+export function PredictiveMaintenance({
+  onNavigate,
+  onMaintenanceDataChanged,
+}: PredictiveMaintenanceProps) {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterSeverity, setFilterSeverity] = useState<string>('all');
   const [filterStatus, setFilterStatus] = useState<string>('all');
@@ -162,6 +166,7 @@ export function PredictiveMaintenance({ onNavigate }: PredictiveMaintenanceProps
         setScheduleSuccess(prediction.id);
         setTimeout(() => setScheduleSuccess(null), 3000);
         await fetchPredictions();
+        onMaintenanceDataChanged?.();
       }
     } catch (err) {
       console.error(err);

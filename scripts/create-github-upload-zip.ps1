@@ -1,10 +1,12 @@
 # Build a shareable zip for GitHub (no node_modules, .git, local DB, caches).
-# Usage: right-click "Run with PowerShell" or: powershell -ExecutionPolicy Bypass -File scripts/create-github-upload-zip.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/create-github-upload-zip.ps1
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$outZip = Join-Path ([Environment]::GetFolderPath("Desktop")) "Asset-Mart-GitHub-Upload.zip"
-# Top folder name inside the zip when extracted (easy to open on GitHub).
-$stageName = "Asset-Mart"
+# Output next to the repo; change $zipBaseName / $stageName for new releases.
+$zipBaseName = "Saranga V7"
+$outZip = Join-Path $root "$zipBaseName.zip"
+# Single top-level folder inside the zip when extracted.
+$stageName = "Saranga-V7"
 $tmpRoot = $env:TEMP
 $stage = Join-Path $tmpRoot $stageName
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }

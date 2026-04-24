@@ -8,15 +8,60 @@ import {
 
 const router = Router();
 
-// GET all maintenance tasks
+const activeMaintenanceWhere = 'WHERE deletedAt IS NULL';
+
+// GET all active (non-deleted) maintenance tasks
 router.get('/', (req: Request, res: Response) => {
-  db.all('SELECT * FROM maintenance_tasks ORDER BY createdAt DESC', [], (err, rows) => {
-    if (err) {
-      res.status(500).json({ error: err.message });
-      return;
+  db.all(
+    `SELECT * FROM maintenance_tasks ${activeMaintenanceWhere} ORDER BY createdAt DESC`,
+    [],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json(rows);
     }
-    res.json(rows);
-  });
+  );
+});
+
+// GET soft-deleted maintenance tasks (history)
+router.get('/history', (req: Request, res: Response) => {
+  db.all(
+    `SELECT * FROM maintenance_tasks WHERE deletedAt IS NOT NULL ORDER BY deletedAt DESC`,
+    [],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      res.json(rows);
+    }
+  );
+});
+
+// POST restore a soft-deleted maintenance task back to the active schedule
+router.post('/:id/restore', (req: Request, res: Response) => {
+  const id = Number.parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid maintenance task id.' });
+    return;
+  }
+  db.run(
+    `UPDATE maintenance_tasks SET deletedAt = NULL WHERE id = ? AND deletedAt IS NOT NULL`,
+    [id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Task not found or not in deleted history.' });
+        return;
+      }
+      res.json({ restored: this.changes, id });
+    }
+  );
 });
 
 // POST a new maintenance task
@@ -46,7 +91,10 @@ router.post('/', (req: Request, res: Response) => {
     return;
   }
 
-  db.get('SELECT 1 as ok FROM assets WHERE id = ? LIMIT 1', [cleanAssetId], (assetErr, row) => {
+  db.get(
+    'SELECT 1 as ok FROM assets WHERE id = ? AND deletedAt IS NULL LIMIT 1',
+    [cleanAssetId],
+    (assetErr, row) => {
     if (assetErr) {
       res.status(500).json({ error: assetErr.message });
       return;
@@ -86,22 +134,70 @@ router.post('/', (req: Request, res: Response) => {
   });
 });
 
+const MAINTENANCE_STATUSES = ['Scheduled', 'In Progress', 'Completed', 'Overdue'] as const;
+
 // PATCH update maintenance task status
 router.patch('/:id', (req: Request, res: Response) => {
-  const { status } = req.body;
-  db.run('UPDATE maintenance_tasks SET status = ? WHERE id = ?', [status, req.params.id], function(err) {
-    if (err) {
-      res.status(400).json({ error: err.message });
-      return;
+  const rawId = req.params.id;
+  const id = Number.parseInt(String(rawId), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid maintenance task id.' });
+    return;
+  }
+
+  const nextStatus = String(req.body?.status ?? '').trim();
+  if (!MAINTENANCE_STATUSES.includes(nextStatus as (typeof MAINTENANCE_STATUSES)[number])) {
+    res.status(400).json({
+      error: `status must be one of: ${MAINTENANCE_STATUSES.join(', ')}.`,
+    });
+    return;
+  }
+
+  db.run(
+    `UPDATE maintenance_tasks SET status = ? WHERE id = ? AND deletedAt IS NULL`,
+    [nextStatus, id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Maintenance task not found.' });
+        return;
+      }
+      res.json({ updated: this.changes, id, status: nextStatus });
     }
-    res.json({ updated: this.changes });
-  });
+  );
+});
+
+// DELETE maintenance task (soft delete — row kept for history)
+router.delete('/:id', (req: Request, res: Response) => {
+  const id = Number.parseInt(String(req.params.id), 10);
+  if (!Number.isFinite(id) || id < 1) {
+    res.status(400).json({ error: 'Invalid maintenance task id.' });
+    return;
+  }
+  db.run(
+    `UPDATE maintenance_tasks SET deletedAt = CURRENT_TIMESTAMP WHERE id = ? AND deletedAt IS NULL`,
+    [id],
+    function(err) {
+      if (err) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      if (this.changes === 0) {
+        res.status(404).json({ error: 'Maintenance task not found or already removed.' });
+        return;
+      }
+      res.json({ deleted: this.changes, id });
+    }
+  );
 });
 
 // GET AI-driven predictions based on real assets health/status
 router.get('/predictions', (req: Request, res: Response) => {
   db.serialize(() => {
-    db.all('SELECT * FROM assets', [], (err, assets: any[]) => {
+    db.all('SELECT * FROM assets WHERE deletedAt IS NULL', [], (err, assets: any[]) => {
       if (err) {
         res.status(500).json({ error: err.message });
         return;
@@ -110,7 +206,7 @@ router.get('/predictions', (req: Request, res: Response) => {
       db.all(
         `SELECT assetId, COUNT(*) as count
          FROM maintenance_tasks
-         WHERE status IN ('Scheduled', 'In Progress')
+         WHERE deletedAt IS NULL AND status IN ('Scheduled', 'In Progress')
          GROUP BY assetId`,
         [],
         (maintErr, maintRows: any[]) => {
@@ -122,7 +218,7 @@ router.get('/predictions', (req: Request, res: Response) => {
           db.all(
             `SELECT assetId, priority, status
              FROM issues
-             WHERE status IN ('Pending', 'In Progress')`,
+             WHERE deletedAt IS NULL AND status IN ('Pending', 'In Progress')`,
             [],
             (issuesErr, issueRows: any[]) => {
               if (issuesErr) {
@@ -131,7 +227,7 @@ router.get('/predictions', (req: Request, res: Response) => {
               }
 
               db.all(
-                'SELECT assetId, priority, status, createdAt FROM issues',
+                'SELECT assetId, priority, status, createdAt FROM issues WHERE deletedAt IS NULL',
                 [],
                 (allIssErr, allIssues: any[]) => {
                   if (allIssErr) {
@@ -139,7 +235,10 @@ router.get('/predictions', (req: Request, res: Response) => {
                     return;
                   }
 
-                  db.all('SELECT assetId, status, createdAt FROM maintenance_tasks', [], (allMtErr, allMaint: any[]) => {
+                  db.all(
+                    'SELECT assetId, status, createdAt FROM maintenance_tasks WHERE deletedAt IS NULL',
+                    [],
+                    (allMtErr, allMaint: any[]) => {
                     if (allMtErr) {
                       res.status(500).json({ error: allMtErr.message });
                       return;

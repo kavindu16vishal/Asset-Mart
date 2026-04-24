@@ -19,8 +19,11 @@ import {
   User,
   UserX,
   Building2,
+  History,
+  RotateCcw,
+  Loader2,
 } from 'lucide-react';
-import { useState, useEffect, type ComponentType } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, type ComponentType } from 'react';
 import { AddDeviceModal } from './AddDeviceModal';
 
 const API_ORIGIN = 'http://localhost:5000';
@@ -28,6 +31,12 @@ const API_ORIGIN = 'http://localhost:5000';
 function isAssetUnassigned(asset: any): boolean {
   const t = String(asset?.assignedTo ?? '').trim().toLowerCase();
   return !t || t === 'unassigned';
+}
+
+function assignedToSelectValue(assignedTo: unknown): string {
+  const t = String(assignedTo ?? '').trim();
+  if (!t || t.toLowerCase() === 'unassigned') return 'Unassigned';
+  return t;
 }
 
 function getAssetImageFiles(asset: any): string[] {
@@ -58,7 +67,37 @@ function parseSpecificationParts(spec: string): { label: string; value: string }
     .filter((p) => p.label || p.value);
 }
 
-export function AssetManagement() {
+type AssignmentUserOption = {
+  id: number;
+  name: string;
+  email: string;
+  department: string;
+};
+
+/** Resolve saved assignee from combobox text (exact name match or legacy string). */
+function resolveAssignedToFromCombo(
+  comboText: string,
+  currentAssigned: unknown,
+  users: AssignmentUserOption[]
+): string {
+  const trimmed = comboText.trim();
+  if (!trimmed) return 'Unassigned';
+
+  const hit = users.find((u) => u.name.toLowerCase() === trimmed.toLowerCase());
+  if (hit) return hit.name;
+
+  const cur = String(currentAssigned ?? '').trim();
+  if (cur && cur.toLowerCase() !== 'unassigned' && cur.toLowerCase() === trimmed.toLowerCase()) {
+    return cur;
+  }
+  return 'Unassigned';
+}
+
+type AssetManagementProps = {
+  onAssetsDataChanged?: () => void;
+};
+
+export function AssetManagement({ onAssetsDataChanged }: AssetManagementProps = {}) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [viewAsset, setViewAsset] = useState<any>(null);
   const [editAsset, setEditAsset] = useState<any>(null);
@@ -68,6 +107,16 @@ export function AssetManagement() {
   const [assets, setAssets] = useState<any[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isAssetHistoryOpen, setIsAssetHistoryOpen] = useState(false);
+  const [deletedAssetHistory, setDeletedAssetHistory] = useState<any[]>([]);
+  const [assetHistoryLoading, setAssetHistoryLoading] = useState(false);
+  const [assetHistoryError, setAssetHistoryError] = useState<string | null>(null);
+  const [restoringAssetId, setRestoringAssetId] = useState<string | null>(null);
+  /** Active users from DB for Assigned To dropdown */
+  const [assignmentUsers, setAssignmentUsers] = useState<AssignmentUserOption[]>([]);
+  const [assigneeComboText, setAssigneeComboText] = useState('');
+  const [assigneeSuggestOpen, setAssigneeSuggestOpen] = useState(false);
+  const assigneeComboRef = useRef<HTMLDivElement | null>(null);
 
   const fetchAssets = () => {
     fetch(`${API_ORIGIN}/api/assets`)
@@ -78,10 +127,124 @@ export function AssetManagement() {
 
   useEffect(() => { fetchAssets(); }, []);
 
-  const showSuccess = (msg: string) => {
+  useEffect(() => {
+    fetch(`${API_ORIGIN}/api/users`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        const active = data.filter(
+          (u: any) => String(u?.status ?? '').toLowerCase() === 'active' && String(u?.name ?? '').trim()
+        );
+        active.sort((a: any, b: any) =>
+          String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })
+        );
+        setAssignmentUsers(
+          active.map((u: any) => ({
+            id: u.id,
+            name: String(u.name).trim(),
+            email: String(u.email ?? '').trim(),
+            department: String(u.department ?? '').trim(),
+          }))
+        );
+      })
+      .catch(console.error);
+  }, []);
+
+  useEffect(() => {
+    if (!editAsset) {
+      setAssigneeComboText('');
+      setAssigneeSuggestOpen(false);
+      return;
+    }
+    const v = assignedToSelectValue(editAsset.assignedTo);
+    setAssigneeComboText(v === 'Unassigned' ? '' : v);
+    setAssigneeSuggestOpen(false);
+  }, [editAsset?.id]);
+
+  useEffect(() => {
+    if (!assigneeSuggestOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      const el = assigneeComboRef.current;
+      if (el && !el.contains(e.target as Node)) setAssigneeSuggestOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [assigneeSuggestOpen]);
+
+  const assigneeSuggestionList = useMemo(() => {
+    const q = assigneeComboText.trim().toLowerCase();
+    let list = q
+      ? assignmentUsers.filter((u) => {
+          const blob = `${u.name} ${u.email} ${u.department}`.toLowerCase();
+          return blob.includes(q);
+        })
+      : [...assignmentUsers];
+
+    const cur = assignedToSelectValue(editAsset?.assignedTo);
+    if (cur !== 'Unassigned') {
+      const selected = assignmentUsers.find((u) => u.name === cur);
+      if (selected && !list.some((u) => u.id === selected.id)) {
+        list = [selected, ...list];
+      }
+    }
+    return list;
+  }, [assignmentUsers, assigneeComboText, editAsset?.assignedTo]);
+
+  const showSuccess = useCallback((msg: string) => {
     setSuccessMsg(msg);
     setTimeout(() => setSuccessMsg(null), 3000);
-  };
+  }, []);
+
+  const fetchAssetDeletedHistory = useCallback(async (silent = false) => {
+    if (!silent) {
+      setAssetHistoryLoading(true);
+      setAssetHistoryError(null);
+    }
+    try {
+      const res = await fetch(`${API_ORIGIN}/api/assets/history`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAssetHistoryError(typeof data.error === 'string' ? data.error : 'Could not load history.');
+        setDeletedAssetHistory([]);
+        return;
+      }
+      setDeletedAssetHistory(Array.isArray(data) ? data : []);
+    } catch {
+      setAssetHistoryError('Network error.');
+      setDeletedAssetHistory([]);
+    } finally {
+      if (!silent) setAssetHistoryLoading(false);
+    }
+  }, []);
+
+  const restoreDeletedAsset = useCallback(
+    async (id: string) => {
+      const cleanId = String(id ?? '').trim();
+      if (!cleanId) return;
+      setRestoringAssetId(cleanId);
+      setAssetHistoryError(null);
+      try {
+        const res = await fetch(
+          `${API_ORIGIN}/api/assets/${encodeURIComponent(cleanId)}/restore`,
+          { method: 'POST' }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setAssetHistoryError(typeof data.error === 'string' ? data.error : 'Could not restore asset.');
+          return;
+        }
+        showSuccess('Asset restored.');
+        fetchAssets();
+        onAssetsDataChanged?.();
+        await fetchAssetDeletedHistory(true);
+      } catch {
+        setAssetHistoryError('Network error.');
+      } finally {
+        setRestoringAssetId(null);
+      }
+    },
+    [fetchAssetDeletedHistory, onAssetsDataChanged, showSuccess]
+  );
 
   const openAssetDetails = (summary: any) => {
     setViewAsset(summary);
@@ -100,18 +263,20 @@ export function AssetManagement() {
 
   const handleDelete = async (id: string) => {
     try {
-      const res = await fetch(`${API_ORIGIN}/api/assets/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_ORIGIN}/api/assets/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (res.ok) {
         fetchAssets();
         setDeleteConfirm(null);
-        showSuccess('Asset deleted successfully.');
+        showSuccess('Asset removed. Restore it anytime from History.');
+        onAssetsDataChanged?.();
+        void fetchAssetDeletedHistory(true);
       }
     } catch (err) { console.error(err); }
   };
 
   const handleStatusChange = async (id: string, newStatus: string) => {
     try {
-      const res = await fetch(`${API_ORIGIN}/api/assets/${id}`, {
+      const res = await fetch(`${API_ORIGIN}/api/assets/${encodeURIComponent(id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus }),
@@ -122,11 +287,13 @@ export function AssetManagement() {
 
   const handleEditSave = async () => {
     if (!editAsset) return;
+    const assignedTo = resolveAssignedToFromCombo(assigneeComboText, editAsset.assignedTo, assignmentUsers);
+    const payload = { ...editAsset, assignedTo };
     try {
-      const res = await fetch(`${API_ORIGIN}/api/assets/${editAsset.id}`, {
+      const res = await fetch(`${API_ORIGIN}/api/assets/${encodeURIComponent(editAsset.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editAsset),
+        body: JSON.stringify(payload),
       });
       if (res.ok) { fetchAssets(); setEditAsset(null); showSuccess('Asset updated successfully.'); }
     } catch (err) { console.error(err); }
@@ -297,9 +464,22 @@ export function AssetManagement() {
       </div>
 
       {/* Section Title */}
-      <div>
-        <h3 className="text-xl font-bold text-gray-900">Asset Inventory</h3>
-        <p className="text-sm text-gray-600 mt-1">All registered assets in your organization</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-xl font-bold text-gray-900">Asset Inventory</h3>
+          <p className="text-sm text-gray-600 mt-1">All registered assets in your organization</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            setIsAssetHistoryOpen(true);
+            void fetchAssetDeletedHistory();
+          }}
+          className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-800 rounded-lg hover:bg-gray-50 transition-colors shrink-0 sm:mt-0.5"
+        >
+          <History className="w-5 h-5" aria-hidden />
+          History
+        </button>
       </div>
 
       {/* Asset Cards */}
@@ -381,7 +561,7 @@ export function AssetManagement() {
                 <button
                   onClick={() => setDeleteConfirm(asset.id)}
                   className="p-2 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                  title="Delete Asset"
+                  title="Remove from inventory"
                 >
                   <Trash2 className="w-5 h-5" />
                 </button>
@@ -697,15 +877,14 @@ export function AssetManagement() {
       {/* Edit Asset Modal */}
       {editAsset && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[min(90vh,720px)] overflow-visible">
             <div className="p-6 border-b border-gray-100 flex items-center justify-between">
               <h2 className="text-xl font-bold text-gray-900">Edit Asset</h2>
               <button onClick={() => setEditAsset(null)} className="p-2 hover:bg-gray-100 rounded-lg text-gray-500">✕</button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="px-6 pt-6 space-y-4 max-h-[min(28vh,220px)] overflow-y-auto border-b border-gray-50">
               {[
                 { label: 'Name', key: 'name' },
-                { label: 'Assigned To', key: 'assignedTo' },
                 { label: 'Department', key: 'department' },
                 { label: 'Location', key: 'location' },
               ].map(({ label, key }) => (
@@ -719,6 +898,120 @@ export function AssetManagement() {
                   />
                 </div>
               ))}
+            </div>
+            <div className="px-6 pb-6 pt-4 space-y-4 overflow-visible">
+              <div ref={assigneeComboRef} className="relative z-[70]">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Assigned To</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none z-10" />
+                  <input
+                    type="text"
+                    placeholder="Type name, email, or department — pick from the list below"
+                    value={assigneeComboText}
+                    onChange={(e) => {
+                      setAssigneeComboText(e.target.value);
+                      setAssigneeSuggestOpen(true);
+                    }}
+                    onFocus={() => setAssigneeSuggestOpen(true)}
+                    className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm bg-white"
+                    autoComplete="off"
+                    aria-autocomplete="list"
+                    aria-expanded={assigneeSuggestOpen}
+                    aria-controls="assignee-suggest-list"
+                  />
+                </div>
+                {assigneeSuggestOpen && (
+                  <div
+                    id="assignee-suggest-list"
+                    role="listbox"
+                    className="absolute left-0 right-0 top-full mt-1 max-h-52 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-xl z-[80]"
+                  >
+                    <button
+                      type="button"
+                      className="w-full text-left px-3 py-2.5 text-sm text-gray-700 hover:bg-gray-50 border-b border-gray-100"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setEditAsset({ ...editAsset, assignedTo: 'Unassigned' });
+                        setAssigneeComboText('');
+                        setAssigneeSuggestOpen(false);
+                      }}
+                    >
+                      <span className="font-medium text-gray-500">Unassigned</span>
+                    </button>
+                    {assigneeSuggestionList.map((u) => (
+                      <button
+                        key={u.id}
+                        type="button"
+                        role="option"
+                        className="w-full text-left px-3 py-2.5 text-sm text-gray-900 hover:bg-blue-50 border-b border-gray-50 last:border-b-0"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          setEditAsset({ ...editAsset, assignedTo: u.name });
+                          setAssigneeComboText(u.name);
+                          setAssigneeSuggestOpen(false);
+                        }}
+                      >
+                        <span className="font-medium">{u.name}</span>
+                        {(u.email || u.department) && (
+                          <span className="block text-xs text-gray-500 mt-0.5">
+                            {[u.email, u.department].filter(Boolean).join(' · ')}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    {(() => {
+                      const cur = String(editAsset.assignedTo ?? '').trim();
+                      const legacy =
+                        cur &&
+                        cur.toLowerCase() !== 'unassigned' &&
+                        !assignmentUsers.some((u) => u.name === cur)
+                          ? cur
+                          : '';
+                      const q = assigneeComboText.trim().toLowerCase();
+                      if (
+                        !legacy ||
+                        (q && !legacy.toLowerCase().includes(q))
+                      ) {
+                        return null;
+                      }
+                      return (
+                        <button
+                          type="button"
+                          className="w-full text-left px-3 py-2.5 text-sm text-amber-900 bg-amber-50/80 hover:bg-amber-50 border-t border-amber-100"
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => {
+                            setEditAsset({ ...editAsset, assignedTo: legacy });
+                            setAssigneeComboText(legacy);
+                            setAssigneeSuggestOpen(false);
+                          }}
+                        >
+                          <span className="font-medium">{legacy}</span>
+                          <span className="block text-xs text-amber-800 mt-0.5">Current assignee (not in active users)</span>
+                        </button>
+                      );
+                    })()}
+                    {assigneeSuggestionList.length === 0 &&
+                      !(
+                        (() => {
+                          const cur = String(editAsset.assignedTo ?? '').trim();
+                          const legacy =
+                            cur &&
+                            cur.toLowerCase() !== 'unassigned' &&
+                            !assignmentUsers.some((u) => u.name === cur)
+                              ? cur
+                              : '';
+                          const q = assigneeComboText.trim().toLowerCase();
+                          return legacy && (!q || legacy.toLowerCase().includes(q));
+                        })()
+                      ) && (
+                        <div className="px-3 py-4 text-sm text-gray-500 text-center">No users match. Try another search.</div>
+                      )}
+                  </div>
+                )}
+                <p className="text-xs text-gray-500 mt-1">
+                  Start typing to filter active users, then click a row to assign. Unassigned clears the assignee.
+                </p>
+              </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
                 <select
@@ -754,11 +1047,114 @@ export function AssetManagement() {
       )}
 
       {/* Delete Confirmation Modal */}
+      {/* Deleted assets history */}
+      {isAssetHistoryOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col border border-gray-200"
+            role="dialog"
+            aria-labelledby="asset-history-title"
+          >
+            <div className="p-6 border-b border-gray-100 flex items-start justify-between gap-4 shrink-0">
+              <div>
+                <h2 id="asset-history-title" className="text-xl font-bold text-gray-900">
+                  Deleted assets history
+                </h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Records kept when an asset is removed from inventory. Newest first.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAssetHistoryOpen(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 shrink-0"
+                aria-label="Close history"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-6">
+              {assetHistoryLoading && (
+                <div className="flex items-center justify-center gap-2 py-12 text-gray-500">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Loading history…
+                </div>
+              )}
+              {!assetHistoryLoading && assetHistoryError && (
+                <p className="text-sm text-red-600 text-center py-8" role="alert">
+                  {assetHistoryError}
+                </p>
+              )}
+              {!assetHistoryLoading && !assetHistoryError && deletedAssetHistory.length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-12">No deleted assets yet.</p>
+              )}
+              {!assetHistoryLoading && !assetHistoryError && deletedAssetHistory.length > 0 && (
+                <ul className="space-y-3">
+                  {deletedAssetHistory.map((row) => (
+                    <li
+                      key={row.id}
+                      className="rounded-xl border border-gray-100 bg-gray-50/80 p-4 text-sm"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+                        <div>
+                          <div className="font-semibold text-gray-900">{row.name || '—'}</div>
+                          <div className="text-xs text-gray-500 mt-0.5">Asset ID: {row.id}</div>
+                        </div>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          Removed:{' '}
+                          {row.deletedAt
+                            ? new Date(row.deletedAt).toLocaleString(undefined, {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-xs text-gray-600 mb-3">
+                        <span>Type: {row.type || '—'}</span>
+                        <span>Dept: {row.department || '—'}</span>
+                        <span>Assigned: {row.assignedTo || '—'}</span>
+                      </div>
+                      <div className="pt-3 border-t border-gray-200/80">
+                        <button
+                          type="button"
+                          disabled={restoringAssetId !== null}
+                          onClick={() => restoreDeletedAsset(row.id)}
+                          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {restoringAssetId === row.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
+                          ) : (
+                            <RotateCcw className="w-4 h-4" aria-hidden />
+                          )}
+                          Restore to inventory
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-100 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsAssetHistoryOpen(false)}
+                className="w-full px-4 py-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {deleteConfirm && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-6">
-            <h2 className="text-lg font-bold text-gray-900 mb-2">Delete Asset?</h2>
-            <p className="text-gray-600 mb-6">This action cannot be undone. Are you sure you want to permanently delete this asset?</p>
+            <h2 className="text-lg font-bold text-gray-900 mb-2">Remove asset?</h2>
+            <p className="text-gray-600 mb-6">
+              This removes the asset from the active inventory. You can restore it later from History.
+            </p>
             <div className="flex gap-3">
               <button onClick={() => setDeleteConfirm(null)} className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">Cancel</button>
               <button onClick={() => handleDelete(deleteConfirm)} className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700">Delete</button>

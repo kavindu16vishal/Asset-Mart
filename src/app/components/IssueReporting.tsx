@@ -1,5 +1,34 @@
-import { Upload, Camera, Video, FileText, AlertCircle, Send, X, Image as ImageIcon, User, Clock, Trash2, CheckCircle as CheckCircleIcon, Eye } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Upload, Camera, Video, FileText, AlertCircle, Send, X, Image as ImageIcon, User, Clock, Trash2, CheckCircle, Eye, Loader2, History, RotateCcw } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+
+/** Resolved: Pending / In Progress → Resolved; Resolved → Pending */
+function nextIssueResolvedToggle(current: string): string {
+  if (current === 'Resolved') return 'Pending';
+  return 'Resolved';
+}
+
+/** In progress: any → In Progress if off; In Progress → Pending; Resolved → In Progress */
+function nextIssueInProgressToggle(current: string): string {
+  if (current === 'In Progress') return 'Pending';
+  return 'In Progress';
+}
+
+const ISSUE_ACTION_BTN =
+  'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border-2 transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2';
+
+function issueResolvedToggleClasses(isOn: boolean) {
+  return isOn
+    ? `${ISSUE_ACTION_BTN} border-green-600 bg-green-600 text-white shadow-md ring-2 ring-green-200/80 focus-visible:ring-green-500`
+    : `${ISSUE_ACTION_BTN} border-green-400 bg-green-50 text-green-600 hover:bg-green-100/90 focus-visible:ring-green-500`;
+}
+
+function issueInProgressToggleClasses(isOn: boolean) {
+  return isOn
+    ? `${ISSUE_ACTION_BTN} border-blue-600 bg-blue-600 text-white shadow-md ring-2 ring-blue-200/80 focus-visible:ring-blue-500`
+    : `${ISSUE_ACTION_BTN} border-blue-400 bg-blue-50 text-blue-600 hover:bg-blue-100/90 focus-visible:ring-blue-500`;
+}
+
+const issueDeleteActionClasses = `${ISSUE_ACTION_BTN} border-red-400 bg-red-50 text-red-600 hover:bg-red-100/90 focus-visible:ring-red-500`;
 
 type UndoableAction =
   | {
@@ -17,7 +46,14 @@ type UndoableAction =
       deleteTimeoutId: number;
     };
 
-export function IssueReporting({ currentUser }: { currentUser?: any }) {
+export function IssueReporting({
+  currentUser,
+  onIssuesDataChanged,
+}: {
+  currentUser?: any;
+  /** Notify parent (e.g. refresh Dashboard aggregates) when issue list meaningfully changes. */
+  onIssuesDataChanged?: () => void;
+}) {
   const [assetId, setAssetId] = useState('');
   const [issueType, setIssueType] = useState('');
   const [priority, setPriority] = useState('Medium');
@@ -31,6 +67,12 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
   const [redoStack, setRedoStack] = useState<UndoableAction[]>([]);
   const [toastAction, setToastAction] = useState<UndoableAction | null>(null);
   const [selectedReport, setSelectedReport] = useState<any | null>(null);
+  const [savingIssueId, setSavingIssueId] = useState<number | null>(null);
+  const [isIssueHistoryOpen, setIsIssueHistoryOpen] = useState(false);
+  const [deletedIssueHistory, setDeletedIssueHistory] = useState<any[]>([]);
+  const [issueHistoryLoading, setIssueHistoryLoading] = useState(false);
+  const [issueHistoryError, setIssueHistoryError] = useState<string | null>(null);
+  const [restoringIssueHistoryId, setRestoringIssueHistoryId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchIssues();
@@ -51,6 +93,57 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
       console.error('Failed to fetch issues', err);
     }
   };
+
+  const fetchIssueDeletedHistory = useCallback(async (silent = false) => {
+    if (!silent) {
+      setIssueHistoryLoading(true);
+      setIssueHistoryError(null);
+    }
+    try {
+      const res = await fetch('http://localhost:5000/api/issues/history');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!silent) {
+          setIssueHistoryError(typeof data.error === 'string' ? data.error : 'Could not load history.');
+          setDeletedIssueHistory([]);
+        }
+        return;
+      }
+      setDeletedIssueHistory(Array.isArray(data) ? data : []);
+    } catch {
+      if (!silent) {
+        setIssueHistoryError('Network error.');
+        setDeletedIssueHistory([]);
+      }
+    } finally {
+      if (!silent) setIssueHistoryLoading(false);
+    }
+  }, []);
+
+  const restoreDeletedIssue = useCallback(
+    async (issueId: number) => {
+      setRestoringIssueHistoryId(issueId);
+      setIssueHistoryError(null);
+      try {
+        const res = await fetch(`http://localhost:5000/api/issues/${issueId}/restore`, {
+          method: 'POST',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setIssueHistoryError(typeof data.error === 'string' ? data.error : 'Could not restore issue.');
+          return;
+        }
+        await fetchIssues();
+        onIssuesDataChanged?.();
+        await fetchIssueDeletedHistory(true);
+      } catch {
+        setIssueHistoryError('Network error.');
+      } finally {
+        setRestoringIssueHistoryId(null);
+      }
+    },
+    [fetchIssueDeletedHistory, onIssuesDataChanged]
+  );
 
   const handleAnalyze = async () => {
     if (!description.trim()) return;
@@ -122,6 +215,7 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
           setUploadedFiles([]);
         }, 3000);
         fetchIssues();
+        onIssuesDataChanged?.();
       } else {
         let msg = `Could not submit report (${res.status})`;
         try {
@@ -155,8 +249,10 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
       const prevStatus = current?.status;
       if (!prevStatus || prevStatus === newStatus) return;
 
+      setSavingIssueId(id);
       // Optimistic UI update
       setRecentReports(prev => prev.map(r => (r.id === id ? { ...r, status: newStatus } : r)));
+      setSelectedReport(prev => (prev && prev.id === id ? { ...prev, status: newStatus } : prev));
 
       const res = await fetch(`http://localhost:5000/api/issues/${id}`, {
         method: 'PATCH',
@@ -164,8 +260,8 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
         body: JSON.stringify({ status: newStatus })
       });
       if (!res.ok) {
-        // Revert if backend failed
         setRecentReports(prev => prev.map(r => (r.id === id ? { ...r, status: prevStatus } : r)));
+        setSelectedReport(prev => (prev && prev.id === id ? { ...prev, status: prevStatus } : prev));
         return;
       }
 
@@ -179,18 +275,27 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
       setUndoStack(prev => [...prev, action]);
       setRedoStack([]);
       setToastAction(action);
+      onIssuesDataChanged?.();
     } catch (err) {
       console.error(err);
+      fetchIssues();
+    } finally {
+      setSavingIssueId(null);
     }
   };
 
   const scheduleDeleteIssue = async (issue: any) => {
+    setSelectedReport(prev => (prev && prev.id === issue.id ? null : prev));
     // Optimistic remove from UI
     setRecentReports(prev => prev.filter(r => r.id !== issue.id));
 
     const timeoutId = window.setTimeout(async () => {
       try {
-        await fetch(`http://localhost:5000/api/issues/${issue.id}`, { method: 'DELETE' });
+        const res = await fetch(`http://localhost:5000/api/issues/${issue.id}`, { method: 'DELETE' });
+        if (res.ok) {
+          onIssuesDataChanged?.();
+          void fetchIssueDeletedHistory(true);
+        }
       } catch (err) {
         console.error(err);
       } finally {
@@ -221,6 +326,9 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
       if (last.kind === 'status') {
         // Optimistic revert
         setRecentReports(prev => prev.map(r => (r.id === last.issueId ? { ...r, status: last.prevStatus } : r)));
+        setSelectedReport(prev =>
+          prev && prev.id === last.issueId ? { ...prev, status: last.prevStatus } : prev
+        );
         const res = await fetch(`http://localhost:5000/api/issues/${last.issueId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -253,6 +361,9 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
     try {
       if (last.kind === 'status') {
         setRecentReports(prev => prev.map(r => (r.id === last.issueId ? { ...r, status: last.nextStatus } : r)));
+        setSelectedReport(prev =>
+          prev && prev.id === last.issueId ? { ...prev, status: last.nextStatus } : prev
+        );
         const res = await fetch(`http://localhost:5000/api/issues/${last.issueId}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
@@ -305,7 +416,7 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
               <AlertCircle className="w-5 h-5 text-blue-600" />
               Active Issue Console
             </h3>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               <button
                 onClick={undoLastAction}
                 disabled={undoStack.length === 0}
@@ -321,6 +432,17 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
                 title="Redo last undone action"
               >
                 Redo
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsIssueHistoryOpen(true);
+                  void fetchIssueDeletedHistory();
+                }}
+                className="inline-flex items-center gap-2 px-3 py-1 text-xs font-bold rounded-full border border-gray-200 text-gray-700 bg-white hover:bg-gray-50 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              >
+                <History className="w-3.5 h-3.5" aria-hidden />
+                History
               </button>
               <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-bold">
                 {recentReports.length} Total Issues
@@ -382,42 +504,174 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
                       </span>
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-2">
-                        {report.status !== 'Resolved' && (
-                          <button 
-                            onClick={() => handleUpdateStatus(report.id, 'Resolved')}
-                            className="p-1.5 bg-green-50 text-green-600 hover:bg-green-100 rounded-lg transition-colors border border-green-200"
-                            title="Mark Resolved"
-                          >
-                            <CheckCircleIcon className="w-4 h-4" />
-                          </button>
-                        )}
-                        {report.status !== 'In Progress' && report.status !== 'Resolved' && (
-                          <button
-                            onClick={() => handleUpdateStatus(report.id, 'In Progress')}
-                            className="p-1.5 bg-blue-50 text-blue-600 hover:bg-blue-100 rounded-lg transition-colors border border-blue-200"
-                            title="Mark In Progress"
-                          >
-                            <Clock className="w-4 h-4" />
-                          </button>
-                        )}
+                      <div className="flex items-center gap-2" aria-label="Issue actions">
                         <button
+                          type="button"
+                          disabled={savingIssueId !== null}
+                          aria-pressed={report.status === 'Resolved'}
+                          aria-label={
+                            report.status === 'Resolved' ? 'Resolved: on — click to undo' : 'Mark resolved'
+                          }
+                          title="Resolved — click to turn on or off"
+                          onClick={() =>
+                            handleUpdateStatus(report.id, nextIssueResolvedToggle(String(report.status ?? '')))
+                          }
+                          className={`${issueResolvedToggleClasses(report.status === 'Resolved')} disabled:opacity-50`}
+                        >
+                          <CheckCircle className="w-5 h-5" strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingIssueId !== null}
+                          aria-pressed={report.status === 'In Progress'}
+                          aria-label={
+                            report.status === 'In Progress' ? 'In progress: on — click to undo' : 'Mark in progress'
+                          }
+                          title="In progress — click to turn on or off"
+                          onClick={() =>
+                            handleUpdateStatus(report.id, nextIssueInProgressToggle(String(report.status ?? '')))
+                          }
+                          className={`${issueInProgressToggleClasses(report.status === 'In Progress')} disabled:opacity-50`}
+                        >
+                          <Clock className="w-5 h-5" strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingIssueId !== null}
+                          aria-label="Delete issue"
+                          title="Delete issue"
                           onClick={async () => {
-                            if (confirm('Delete this issue permanently?')) {
+                            if (
+                              confirm(
+                                'Remove this issue from the active list? It will appear in History and can be restored.'
+                              )
+                            ) {
                               await scheduleDeleteIssue(report);
                             }
                           }}
-                          className="p-1.5 bg-red-50 text-red-600 hover:bg-red-100 rounded-lg transition-colors border border-red-200"
-                          title="Delete Issue"
+                          className={`${issueDeleteActionClasses} disabled:opacity-50`}
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Trash2 className="w-5 h-5" strokeWidth={2} />
                         </button>
+                        {savingIssueId === report.id && (
+                          <Loader2 className="w-5 h-5 shrink-0 animate-spin text-gray-400" aria-hidden />
+                        )}
                       </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Deleted issues history (admin) */}
+      {isIssueHistoryOpen && currentUser?.role === 'admin' && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div
+            className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col border border-gray-200"
+            role="dialog"
+            aria-labelledby="issues-history-title"
+          >
+            <div className="p-6 border-b border-gray-100 flex items-start justify-between gap-4 shrink-0">
+              <div>
+                <h2 id="issues-history-title" className="text-xl font-bold text-gray-900">
+                  Deleted issues history
+                </h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  Issues removed from the Active Issue Console. Newest first.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsIssueHistoryOpen(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg text-gray-500 shrink-0"
+                aria-label="Close history"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="overflow-y-auto flex-1 p-6">
+              {issueHistoryLoading && (
+                <div className="flex items-center justify-center gap-2 py-12 text-gray-500">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Loading history…
+                </div>
+              )}
+              {!issueHistoryLoading && issueHistoryError && (
+                <p className="text-sm text-red-600 text-center py-8" role="alert">
+                  {issueHistoryError}
+                </p>
+              )}
+              {!issueHistoryLoading && !issueHistoryError && deletedIssueHistory.length === 0 && (
+                <p className="text-sm text-gray-500 text-center py-12">No deleted issues yet.</p>
+              )}
+              {!issueHistoryLoading && !issueHistoryError && deletedIssueHistory.length > 0 && (
+                <ul className="space-y-3">
+                  {deletedIssueHistory.map((row) => (
+                    <li
+                      key={row.id}
+                      className="rounded-xl border border-gray-100 bg-gray-50/80 p-4 text-sm"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+                        <div className="font-semibold text-gray-900">
+                          {row.reporterName || 'Unknown reporter'}{' '}
+                          <span className="font-normal text-gray-500">
+                            · Issue #{row.id} · {row.assetId || 'No Asset ID'}
+                          </span>
+                        </div>
+                        <span className="text-xs text-gray-500 whitespace-nowrap">
+                          Removed:{' '}
+                          {row.deletedAt
+                            ? new Date(row.deletedAt).toLocaleString(undefined, {
+                                dateStyle: 'medium',
+                                timeStyle: 'short',
+                              })
+                            : '—'}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        <span className={`px-2 py-0.5 rounded text-xs font-medium ${getStatusBadge(row.status)}`}>
+                          Last status: {row.status}
+                        </span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase border ${getPriorityBadge(row.priority)}`}>
+                          {row.priority}
+                        </span>
+                        <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                          {row.issueType}
+                        </span>
+                      </div>
+                      <p className="text-gray-600 line-clamp-3">{row.description || '—'}</p>
+                      <div className="mt-3 pt-3 border-t border-gray-200/80">
+                        <button
+                          type="button"
+                          disabled={restoringIssueHistoryId !== null}
+                          onClick={() => restoreDeletedIssue(Number(row.id))}
+                          className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {restoringIssueHistoryId === Number(row.id) ? (
+                            <Loader2 className="w-4 h-4 animate-spin" aria-hidden />
+                          ) : (
+                            <RotateCcw className="w-4 h-4" aria-hidden />
+                          )}
+                          Restore to console
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="p-4 border-t border-gray-100 shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsIssueHistoryOpen(false)}
+                className="w-full px-4 py-2.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium transition-colors"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -859,6 +1113,67 @@ export function IssueReporting({ currentUser }: { currentUser?: any }) {
                         </div>
                       );
                     })}
+                  </div>
+                </div>
+              )}
+
+              {currentUser?.role === 'admin' && (
+                <div className="border-t border-gray-100 pt-4 space-y-2">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Actions</p>
+                  <p className="text-xs text-gray-400">
+                    Green and blue toggle status; red schedules delete (same as table). Undo is available in the console.
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      disabled={savingIssueId !== null}
+                      aria-pressed={selectedReport.status === 'Resolved'}
+                      title="Resolved — toggle"
+                      onClick={() =>
+                        handleUpdateStatus(
+                          selectedReport.id,
+                          nextIssueResolvedToggle(String(selectedReport.status ?? ''))
+                        )
+                      }
+                      className={`${issueResolvedToggleClasses(selectedReport.status === 'Resolved')} disabled:opacity-50`}
+                    >
+                      <CheckCircle className="w-5 h-5" strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingIssueId !== null}
+                      aria-pressed={selectedReport.status === 'In Progress'}
+                      title="In progress — toggle"
+                      onClick={() =>
+                        handleUpdateStatus(
+                          selectedReport.id,
+                          nextIssueInProgressToggle(String(selectedReport.status ?? ''))
+                        )
+                      }
+                      className={`${issueInProgressToggleClasses(selectedReport.status === 'In Progress')} disabled:opacity-50`}
+                    >
+                      <Clock className="w-5 h-5" strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingIssueId !== null}
+                      title="Delete issue"
+                      onClick={async () => {
+                        if (
+                          confirm(
+                            'Remove this issue from the active list? It will appear in History and can be restored.'
+                          )
+                        ) {
+                          await scheduleDeleteIssue(selectedReport);
+                        }
+                      }}
+                      className={`${issueDeleteActionClasses} disabled:opacity-50`}
+                    >
+                      <Trash2 className="w-5 h-5" strokeWidth={2} />
+                    </button>
+                    {savingIssueId === selectedReport.id && (
+                      <Loader2 className="w-5 h-5 shrink-0 animate-spin text-gray-400" aria-hidden />
+                    )}
                   </div>
                 </div>
               )}

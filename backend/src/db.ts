@@ -62,7 +62,8 @@ export const db = new sqlite3.Database(dbPath, (err) => {
         location TEXT,
         health TEXT,
         specifications TEXT,
-        attachments TEXT DEFAULT '[]'
+        attachments TEXT DEFAULT '[]',
+        deletedAt DATETIME
       )`);
 
       db.all('PRAGMA table_info(assets)', (migrateErr, columns: any[]) => {
@@ -71,6 +72,11 @@ export const db = new sqlite3.Database(dbPath, (err) => {
           if (!hasAttachments) {
             console.log('Migrating database: Adding attachments column to assets table...');
             db.run("ALTER TABLE assets ADD COLUMN attachments TEXT DEFAULT '[]'");
+          }
+          const hasAssetDeletedAt = columns.some((c) => c.name === 'deletedAt');
+          if (!hasAssetDeletedAt) {
+            console.log('Migrating database: Adding deletedAt to assets table...');
+            db.run('ALTER TABLE assets ADD COLUMN deletedAt DATETIME');
           }
         }
       });
@@ -85,7 +91,8 @@ export const db = new sqlite3.Database(dbPath, (err) => {
         status TEXT DEFAULT 'Pending',
         reportedBy TEXT,
         attachments TEXT DEFAULT '[]',
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        deletedAt DATETIME
       )`);
 
       // Migration: Add reportedBy column to issues if it doesn't exist
@@ -101,6 +108,12 @@ export const db = new sqlite3.Database(dbPath, (err) => {
           if (!hasAttachments) {
             console.log("Migrating database: Adding attachments column to issues table...");
             db.run("ALTER TABLE issues ADD COLUMN attachments TEXT DEFAULT '[]'");
+          }
+
+          const hasIssueDeletedAt = columns.some((c) => c.name === 'deletedAt');
+          if (!hasIssueDeletedAt) {
+            console.log('Migrating database: Adding deletedAt to issues table...');
+            db.run('ALTER TABLE issues ADD COLUMN deletedAt DATETIME');
           }
         }
       });
@@ -140,8 +153,16 @@ export const db = new sqlite3.Database(dbPath, (err) => {
         priority TEXT DEFAULT 'Medium',
         status TEXT DEFAULT 'Scheduled',
         assignedTo TEXT,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        deletedAt DATETIME
       )`);
+
+      db.all('PRAGMA table_info(maintenance_tasks)', (mtErr, mtCols: any[]) => {
+        if (!mtErr && mtCols && !mtCols.some((c) => c.name === 'deletedAt')) {
+          console.log('Migrating database: Adding deletedAt to maintenance_tasks...');
+          db.run('ALTER TABLE maintenance_tasks ADD COLUMN deletedAt DATETIME');
+        }
+      });
 
       // Seed Initial Data
       seedData();
@@ -168,7 +189,7 @@ function seedData() {
     }
   });
 
-  db.get("SELECT count(*) as count FROM assets", (err, row: any) => {
+  db.get("SELECT count(*) as count FROM assets WHERE deletedAt IS NULL", (err, row: any) => {
     if (err) return console.error(err);
     if (row.count === 0) {
       const assets = [

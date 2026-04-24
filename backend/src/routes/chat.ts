@@ -42,8 +42,12 @@ router.post('/', async (req: Request, res: Response) => {
     if (userRole === 'admin') {
       try {
         const [assets, issues, users] = await Promise.all([
-          queryAll('SELECT id, name, type, assignedTo, department, status, health FROM assets'),
-          queryAll('SELECT id, assetId, issueType, priority, status FROM issues ORDER BY id DESC LIMIT 10'),
+          queryAll(
+            'SELECT id, name, type, assignedTo, department, status, health FROM assets WHERE deletedAt IS NULL'
+          ),
+          queryAll(
+            'SELECT id, assetId, issueType, priority, status FROM issues WHERE deletedAt IS NULL ORDER BY id DESC LIMIT 10'
+          ),
           queryAll('SELECT id, name, role, department, status FROM users'),
         ]);
 
