@@ -17,12 +17,18 @@ import {
   FileText,
   Cpu,
   User,
+  UserX,
   Building2,
 } from 'lucide-react';
 import { useState, useEffect, type ComponentType } from 'react';
 import { AddDeviceModal } from './AddDeviceModal';
 
 const API_ORIGIN = 'http://localhost:5000';
+
+function isAssetUnassigned(asset: any): boolean {
+  const t = String(asset?.assignedTo ?? '').trim().toLowerCase();
+  return !t || t === 'unassigned';
+}
 
 function getAssetImageFiles(asset: any): string[] {
   if (Array.isArray(asset?.files)) {
@@ -58,6 +64,7 @@ export function AssetManagement() {
   const [editAsset, setEditAsset] = useState<any>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('all');
+  const [assignmentFilter, setAssignmentFilter] = useState<'all' | 'assigned' | 'unassigned'>('all');
   const [assets, setAssets] = useState<any[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -144,12 +151,19 @@ export function AssetManagement() {
     }
   };
 
-  const filteredAssets = assets.filter(asset => {
+  const assignedCount = assets.filter((a) => !isAssetUnassigned(a)).length;
+  const unassignedCount = assets.filter((a) => isAssetUnassigned(a)).length;
+
+  const filteredAssets = assets.filter((asset) => {
     const matchesSearch = asset.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          asset.id?.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          asset.assignedTo?.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesFilter = filterType === 'all' || asset.type === filterType;
-    return matchesSearch && matchesFilter;
+    const matchesAssignment =
+      assignmentFilter === 'all' ||
+      (assignmentFilter === 'assigned' && !isAssetUnassigned(asset)) ||
+      (assignmentFilter === 'unassigned' && isAssetUnassigned(asset));
+    return matchesSearch && matchesFilter && matchesAssignment;
   });
 
   return (
@@ -178,7 +192,13 @@ export function AssetManagement() {
 
       {/* Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        <button
+          type="button"
+          onClick={() => setAssignmentFilter('all')}
+          className={`text-left bg-white rounded-xl p-5 shadow-sm border transition-all hover:shadow-md cursor-pointer ${
+            assignmentFilter === 'all' ? 'ring-2 ring-blue-500 ring-offset-2 border-blue-200' : 'border-gray-100'
+          }`}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-sm text-gray-600">Total Assets</p>
@@ -188,20 +208,26 @@ export function AssetManagement() {
               <Package className="w-6 h-6 text-blue-600" />
             </div>
           </div>
-        </div>
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            setAssignmentFilter((f) => (f === 'assigned' ? 'all' : 'assigned'))
+          }
+          className={`text-left bg-white rounded-xl p-5 shadow-sm border transition-all hover:shadow-md cursor-pointer ${
+            assignmentFilter === 'assigned' ? 'ring-2 ring-green-500 ring-offset-2 border-green-200' : 'border-gray-100'
+          }`}
+        >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600">Active</p>
-              <p className="text-2xl font-bold text-green-600 mt-1">
-                {assets.filter(a => a.status === 'Active').length}
-              </p>
+              <p className="text-sm text-gray-600">Assigned</p>
+              <p className="text-2xl font-bold text-green-600 mt-1">{assignedCount}</p>
             </div>
             <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
-              <CheckCircle className="w-6 h-6 text-green-600" />
+              <User className="w-6 h-6 text-green-600" />
             </div>
           </div>
-        </div>
+        </button>
         <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
           <div className="flex items-center justify-between">
             <div>
@@ -215,19 +241,25 @@ export function AssetManagement() {
             </div>
           </div>
         </div>
-        <div className="bg-white rounded-xl p-5 shadow-sm border border-gray-100">
+        <button
+          type="button"
+          onClick={() =>
+            setAssignmentFilter((f) => (f === 'unassigned' ? 'all' : 'unassigned'))
+          }
+          className={`text-left bg-white rounded-xl p-5 shadow-sm border transition-all hover:shadow-md cursor-pointer ${
+            assignmentFilter === 'unassigned' ? 'ring-2 ring-red-500 ring-offset-2 border-red-200' : 'border-gray-100'
+          }`}
+        >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-gray-600">Health Issues</p>
-              <p className="text-2xl font-bold text-red-600 mt-1">
-                {assets.filter(a => a.health === 'Needs Attention' || a.health === 'Fair').length}
-              </p>
+              <p className="text-sm text-gray-600">Unassigned</p>
+              <p className="text-2xl font-bold text-red-600 mt-1">{unassignedCount}</p>
             </div>
             <div className="w-12 h-12 bg-red-100 rounded-lg flex items-center justify-center">
-              <Activity className="w-6 h-6 text-red-600" />
+              <UserX className="w-6 h-6 text-red-600" />
             </div>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* Search and Filter Bar */}
@@ -273,7 +305,11 @@ export function AssetManagement() {
       {/* Asset Cards */}
       <div className="grid grid-cols-1 gap-4">
         {filteredAssets.length === 0 && (
-          <div className="text-center py-12 text-gray-400">No assets found.</div>
+          <div className="text-center py-12 text-gray-400">
+            {assets.length === 0
+              ? 'No assets found.'
+              : 'No assets match your search or filters.'}
+          </div>
         )}
         {filteredAssets.map((asset) => (
           <div key={asset.id} className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 hover:shadow-md transition-shadow">

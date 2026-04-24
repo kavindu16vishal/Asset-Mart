@@ -1,0 +1,46 @@
+{
+  "feature_columns": [
+    "asset_type",
+    "department",
+    "location",
+    "asset_status",
+    "health_at_snapshot",
+    "is_unassigned",
+    "age_years",
+    "warranty_days_remaining",
+    "open_issues_count",
+    "open_critical_or_high_issues",
+    "issues_opened_90d",
+    "maintenance_open_or_scheduled",
+    "maintenance_completed_365d",
+    "days_since_last_maintenance",
+    "rolling_error_count_30d",
+    "avg_cpu_temp_c",
+    "has_thermal_reading",
+    "reported_uptime_pct"
+  ],
+  "categorical": [
+    "asset_type",
+    "department",
+    "location",
+    "asset_status",
+    "health_at_snapshot"
+  ],
+  "numeric": [
+    "is_unassigned",
+    "age_years",
+    "warranty_days_remaining",
+    "open_issues_count",
+    "open_critical_or_high_issues",
+    "issues_opened_90d",
+    "maintenance_open_or_scheduled",
+    "maintenance_completed_365d",
+    "days_since_last_maintenance",
+    "rolling_error_count_30d",
+    "avg_cpu_temp_c",
+    "has_thermal_reading",
+    "reported_uptime_pct"
+  ],
+  "target": "risk_event_30d",
+  "model_path": "C:\\Users\\Kavindu Vishal\\Desktop\\Saranga Final Version\\ml\\models\\risk_30d.joblib"
+}

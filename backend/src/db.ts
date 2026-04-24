@@ -105,9 +105,30 @@ export const db = new sqlite3.Database(dbPath, (err) => {
         }
       });
 
-      // Force Demo Accounts to exist (compensate for old seeded databases)
-      db.run("INSERT OR IGNORE INTO users (name, email, password, role, department, status, lastActive) VALUES ('Admin User', 'admin@assetmart.com', 'admin123', 'admin', 'IT', 'Active', 'Just now')");
-      db.run("INSERT OR IGNORE INTO users (name, email, password, role, department, status, lastActive) VALUES ('Regular User', 'user@assetmart.com', 'user123', 'user', 'Operations', 'Active', 'Just now')");
+      // Demo logins: upsert so password always matches (INSERT OR IGNORE left stale rows when DB
+      // had admin@ with a different password, causing "Invalid email or password" for admin123).
+      db.run(
+        `INSERT INTO users (name, email, password, role, department, status, lastActive)
+         VALUES ('Admin User', 'admin@assetmart.com', 'admin123', 'admin', 'IT', 'Active', 'Just now')
+         ON CONFLICT(email) DO UPDATE SET
+           name = excluded.name,
+           password = excluded.password,
+           role = excluded.role,
+           department = excluded.department,
+           status = excluded.status,
+           lastActive = excluded.lastActive`
+      );
+      db.run(
+        `INSERT INTO users (name, email, password, role, department, status, lastActive)
+         VALUES ('Regular User', 'user@assetmart.com', 'user123', 'user', 'Operations', 'Active', 'Just now')
+         ON CONFLICT(email) DO UPDATE SET
+           name = excluded.name,
+           password = excluded.password,
+           role = excluded.role,
+           department = excluded.department,
+           status = excluded.status,
+           lastActive = excluded.lastActive`
+      );
 
       // Maintenance Tasks Table
       db.run(`CREATE TABLE IF NOT EXISTS maintenance_tasks (

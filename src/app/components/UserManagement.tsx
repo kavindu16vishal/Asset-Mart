@@ -1,5 +1,5 @@
-import { Users, Mail, Shield, Edit2, Trash2, KeyRound } from 'lucide-react';
-import { useState, useEffect } from 'react';
+import { Users, Mail, Shield, Edit2, Trash2, KeyRound, Search } from 'lucide-react';
+import { useState, useEffect, useMemo } from 'react';
 import { AddUserModal } from './AddUserModal';
 
 export function UserManagement() {
@@ -9,6 +9,18 @@ export function UserManagement() {
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [resetInfo, setResetInfo] = useState<{ userName: string; tempPassword: string; recoveryCodes: string[] } | null>(null);
+  const [userSearch, setUserSearch] = useState('');
+
+  const filteredUsers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) => {
+      const fields = [u.name, u.email, u.role, u.department, u.status, u.lastActive]
+        .filter(Boolean)
+        .map((s: string) => String(s).toLowerCase());
+      return fields.some((f) => f.includes(q));
+    });
+  }, [users, userSearch]);
 
   const fetchUsers = () => {
     fetch('http://localhost:5000/api/users')
@@ -156,6 +168,19 @@ export function UserManagement() {
 
       {/* User Table */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="px-4 py-3 sm:px-6 border-b border-gray-100">
+          <div className="relative max-w-sm">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+            <input
+              type="search"
+              value={userSearch}
+              onChange={(e) => setUserSearch(e.target.value)}
+              placeholder="Search by name, email, role, or department…"
+              className="w-full pl-10 pr-4 py-2 text-sm border border-gray-200 rounded-lg bg-white text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-300"
+              aria-label="Search users"
+            />
+          </div>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-100">
@@ -172,7 +197,10 @@ export function UserManagement() {
               {users.length === 0 && (
                 <tr><td colSpan={6} className="text-center py-8 text-gray-400">No users found.</td></tr>
               )}
-              {users.map((user) => (
+              {users.length > 0 && filteredUsers.length === 0 && (
+                <tr><td colSpan={6} className="text-center py-8 text-gray-400">No users match your search.</td></tr>
+              )}
+              {filteredUsers.map((user) => (
                 <tr key={user.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center gap-3">

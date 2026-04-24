@@ -32,3 +32,8 @@ backend/database.sqlite
 uploads/
 backend/uploads/
 
+## Python ML
+ml/__pycache__/
+**/__pycache__/
+*.pyc
+

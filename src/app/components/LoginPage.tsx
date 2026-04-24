@@ -35,14 +35,31 @@ export function LoginPage({ onLogin }: LoginPageProps) {
         const res = await fetch('http://localhost:5000/api/users/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+          body: JSON.stringify({ email: email.trim(), password: password.trim() })
         });
-        const data = await res.json();
-        
-        if (!res.ok) throw new Error(data.error || 'Login failed');
-        onLogin(data.user.role as 'admin' | 'user', data.user);
+        const text = await res.text();
+        let data: any = {};
+        try {
+          data = text ? JSON.parse(text) : {};
+        } catch {
+          throw new Error('Invalid server response. Is the API running?');
+        }
+        if (!res.ok) {
+          throw new Error(data.error || 'Login failed');
+        }
+        if (!data.user) {
+          throw new Error('Invalid server response: missing user');
+        }
+        // App only distinguishes admin vs non-admin; Manager etc. use user panel
+        const appRole: 'admin' | 'user' = data.user.role === 'admin' ? 'admin' : 'user';
+        onLogin(appRole, data.user);
       } catch (err: any) {
-        setError(err.message);
+        const msg = err?.message || String(err);
+        if (msg === 'Failed to fetch' || msg.includes('NetworkError') || msg.includes('fetch')) {
+          setError('Cannot reach the server. Start the backend: open a terminal, run cd backend then npm run dev (keep it on port 5000).');
+        } else {
+          setError(msg);
+        }
       } finally {
         setIsLoading(false);
       }

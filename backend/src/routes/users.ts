@@ -159,7 +159,9 @@ router.delete('/:id', (req: Request, res: Response) => {
 
 // POST /register
 router.post('/register', (req: Request, res: Response) => {
-  const { name, email, password } = req.body;
+  const name = String(req.body?.name ?? '').trim();
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '').trim();
   
   if (!name || !email || !password) {
     res.status(400).json({ error: 'Name, email, and password are required' });
@@ -195,14 +197,18 @@ router.post('/register', (req: Request, res: Response) => {
 
 // POST /login
 router.post('/login', (req: Request, res: Response) => {
-  const { email, password } = req.body;
+  const email = String(req.body?.email ?? '').trim().toLowerCase();
+  const password = String(req.body?.password ?? '').trim();
   
   if (!email || !password) {
     res.status(400).json({ error: 'Email and password are required' });
     return;
   }
 
-  db.get('SELECT * FROM users WHERE email = ? AND password = ?', [email, password], (err, user: any) => {
+  db.get(
+    'SELECT * FROM users WHERE LOWER(TRIM(email)) = ? AND password = ?',
+    [email, password],
+    (err, user: any) => {
     if (err) {
       res.status(500).json({ error: err.message });
       return;

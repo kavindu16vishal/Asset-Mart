@@ -1,5 +1,10 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
+import {
+  buildFeatureRow,
+  heuristicRiskProbability,
+  predictRiskProbabilitiesSync,
+} from '../mlRiskService';
 
 const router = Router();
 
@@ -125,21 +130,90 @@ router.get('/predictions', (req: Request, res: Response) => {
                 return;
               }
 
-              const openMaintenanceCountByAsset = new Map<string, number>();
-              maintRows.forEach((r: any) => {
-                if (r?.assetId) openMaintenanceCountByAsset.set(String(r.assetId), Number(r.count ?? 0));
-              });
+              db.all(
+                'SELECT assetId, priority, status, createdAt FROM issues',
+                [],
+                (allIssErr, allIssues: any[]) => {
+                  if (allIssErr) {
+                    res.status(500).json({ error: allIssErr.message });
+                    return;
+                  }
 
-              const openIssueCountByAsset = new Map<string, number>();
-              const hasOpenCriticalIssueByAsset = new Map<string, boolean>();
-              issueRows.forEach((r: any) => {
-                const assetId = String(r.assetId ?? '');
-                if (!assetId) return;
-                openIssueCountByAsset.set(assetId, (openIssueCountByAsset.get(assetId) ?? 0) + 1);
-                if (String(r.priority).toLowerCase() === 'critical') {
-                  hasOpenCriticalIssueByAsset.set(assetId, true);
-                }
-              });
+                  db.all('SELECT assetId, status, createdAt FROM maintenance_tasks', [], (allMtErr, allMaint: any[]) => {
+                    if (allMtErr) {
+                      res.status(500).json({ error: allMtErr.message });
+                      return;
+                    }
+
+                    const nowMs = Date.now();
+                    const dayMs = 86400000;
+
+                    type IssueStats = { open: number; critHigh: number; d90: number; d30: number };
+                    const issueStats = new Map<string, IssueStats>();
+                    const getIs = (aid: string): IssueStats => {
+                      if (!issueStats.has(aid)) {
+                        issueStats.set(aid, { open: 0, critHigh: 0, d90: 0, d30: 0 });
+                      }
+                      return issueStats.get(aid)!;
+                    };
+
+                    for (const r of allIssues) {
+                      const assetId = String(r.assetId ?? '');
+                      if (!assetId) continue;
+                      const pr = String(r.priority ?? '').toLowerCase();
+                      const st = String(r.status ?? '');
+                      const isOpen = st === 'Pending' || st === 'In Progress';
+                      const cTime = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+                      if (!cTime) continue;
+                      const ageDays = (nowMs - cTime) / dayMs;
+                      if (ageDays < 0) continue;
+                      const s = getIs(assetId);
+                      if (ageDays <= 90) s.d90 += 1;
+                      if (ageDays <= 30) s.d30 += 1;
+                      if (isOpen) {
+                        s.open += 1;
+                        if (pr === 'critical' || pr === 'high') s.critHigh += 1;
+                      }
+                    }
+
+                    type MtStats = { openSched: number; c365: number; lastD: string | null };
+                    const maintStats = new Map<string, MtStats>();
+                    const getMs = (aid: string): MtStats => {
+                      if (!maintStats.has(aid)) {
+                        maintStats.set(aid, { openSched: 0, c365: 0, lastD: null });
+                      }
+                      return maintStats.get(aid)!;
+                    };
+                    for (const r of allMaint) {
+                      const assetId = String(r.assetId ?? '');
+                      if (!assetId) continue;
+                      const st = String(r.status ?? '');
+                      const ms = getMs(assetId);
+                      if (st === 'Scheduled' || st === 'In Progress') ms.openSched += 1;
+                      const cTime = r.createdAt ? new Date(r.createdAt).getTime() : 0;
+                      if (cTime) {
+                        const ageDays = (nowMs - cTime) / dayMs;
+                        if (ageDays >= 0 && ageDays <= 365) ms.c365 += 1;
+                        const dStr = String(r.createdAt);
+                        if (!ms.lastD || dStr > ms.lastD) ms.lastD = dStr;
+                      }
+                    }
+
+                    const openMaintenanceCountByAsset = new Map<string, number>();
+                    maintRows.forEach((r: any) => {
+                      if (r?.assetId) openMaintenanceCountByAsset.set(String(r.assetId), Number(r.count ?? 0));
+                    });
+
+                    const openIssueCountByAsset = new Map<string, number>();
+                    const hasOpenCriticalIssueByAsset = new Map<string, boolean>();
+                    issueRows.forEach((r: any) => {
+                      const assetId = String(r.assetId ?? '');
+                      if (!assetId) return;
+                      openIssueCountByAsset.set(assetId, (openIssueCountByAsset.get(assetId) ?? 0) + 1);
+                      if (String(r.priority).toLowerCase() === 'critical') {
+                        hasOpenCriticalIssueByAsset.set(assetId, true);
+                      }
+                    });
 
               const severityMap: Record<string, 'Critical' | 'High' | 'Medium' | 'Low'> = {
                 'Needs Attention': 'Critical',
@@ -160,95 +234,127 @@ router.get('/predictions', (req: Request, res: Response) => {
                 'Good': 'Component Wear',
               };
 
-              const daysMap: Record<string, number> = {
-                'Needs Attention': 5,
-                'Fair': 14,
-                'Good': 45,
-              };
+              const filtered = assets.filter((a) => (a.health ?? 'Good') !== 'Excellent');
 
-              const confidenceMap: Record<string, number> = {
-                'Needs Attention': 91.5,
-                'Fair': 84.0,
-                'Good': 72.0,
-              };
+                    const featureRows = filtered.map((asset) => {
+                      const assetId = String(asset.id);
+                      const is = getIs(assetId);
+                      const ms = getMs(assetId);
+                      const last = ms.lastD ? new Date(ms.lastD).getTime() : 0;
+                      const daysSinceLastM = last
+                        ? Math.max(0, Math.floor((nowMs - last) / dayMs))
+                        : 999;
+                      return buildFeatureRow(asset, {
+                        openIssues: is.open,
+                        openCriticalOrHigh: is.critHigh,
+                        issuesOpened90d: is.d90,
+                        issuesOpened30d: is.d30,
+                        maintenanceOpenOrScheduled: openMaintenanceCountByAsset.get(assetId) ?? ms.openSched,
+                        maintenanceCompleted365d: ms.c365,
+                        daysSinceLastMaintenance: daysSinceLastM,
+                      });
+                    });
 
-              const predictions = assets
-                .filter(a => (a.health ?? 'Good') !== 'Excellent')
-                .map((asset) => {
-                  const assetId = String(asset.id);
-                  const health = String(asset.health ?? 'Good');
+                    const mlProbs = predictRiskProbabilitiesSync(featureRows);
 
-                  const openMaint = openMaintenanceCountByAsset.get(assetId) ?? 0;
-                  const openIssues = openIssueCountByAsset.get(assetId) ?? 0;
-                  const hasCriticalIssue = hasOpenCriticalIssueByAsset.get(assetId) ?? false;
+                    const predictions = filtered.map((asset, idx) => {
+                      const assetId = String(asset.id);
+                      const health = String(asset.health ?? 'Good');
 
-                  const daysUntil = daysMap[health] ?? 30;
-                  const predictedDate = new Date(Date.now() + daysUntil * 86400000).toISOString().split('T')[0];
+                      const openMaint = openMaintenanceCountByAsset.get(assetId) ?? 0;
+                      const openIssues = openIssueCountByAsset.get(assetId) ?? 0;
+                      const hasCriticalIssue = hasOpenCriticalIssueByAsset.get(assetId) ?? false;
 
-                  const baseSeverity = severityMap[health] ?? 'Low';
-                  const severity: 'Critical' | 'High' | 'Medium' | 'Low' = hasCriticalIssue ? 'Critical' : baseSeverity;
+                      const p = mlProbs
+                        ? mlProbs[idx]
+                        : heuristicRiskProbability(health, hasCriticalIssue, openIssues);
+                      const confidenceScore = Math.min(99, Math.max(0, Math.round(p * 1000) / 10));
 
-                  const predictionType: PredictionType = hasCriticalIssue
-                    ? 'Failure'
-                    : (typeMap[health] ?? 'Component Wear');
+                      const daysUntil = Math.max(
+                        1,
+                        Math.min(60, Math.round((1 - p) * 45 + (hasCriticalIssue ? 0 : 3)))
+                      );
 
-                  const status: 'Pending Review' | 'Acknowledged' | 'Action Scheduled' | 'Resolved' | 'False Positive' =
-                    openMaint > 0 ? 'Action Scheduled' : 'Pending Review';
+                      const predictedDate = new Date(Date.now() + daysUntil * 86400000)
+                        .toISOString()
+                        .split('T')[0];
 
-                  const confidenceScore = Math.min(
-                    99.0,
-                    (confidenceMap[health] ?? 70.0) + (hasCriticalIssue ? 3 : 0)
-                  );
+                      const baseSeverity = severityMap[health] ?? 'Low';
+                      const fromProb: 'Critical' | 'High' | 'Medium' | 'Low' =
+                        p > 0.7 ? 'Critical' : p > 0.45 ? 'High' : p > 0.2 ? 'Medium' : 'Low';
+                      const fromHealth: 'Critical' | 'High' | 'Medium' | 'Low' = hasCriticalIssue
+                        ? 'Critical'
+                        : baseSeverity;
+                      const rank: Record<string, number> = {
+                        Critical: 0,
+                        High: 1,
+                        Medium: 2,
+                        Low: 3,
+                      };
+                      const severity =
+                        (rank[fromHealth] < rank[fromProb] ? fromHealth : fromProb);
 
-                  const errorCount = openIssues + (health === 'Needs Attention' ? 25 : health === 'Fair' ? 8 : 2);
-                  const avgTemperature = health === 'Needs Attention' ? 82 : health === 'Fair' ? 68 : 55;
+                      const predictionType: PredictionType = hasCriticalIssue
+                        ? 'Failure'
+                        : (typeMap[health] ?? 'Component Wear');
 
-                  const purchase = asset.purchaseDate ? new Date(asset.purchaseDate) : null;
-                  const ageYears = purchase ? (Date.now() - purchase.getTime()) / (1000 * 60 * 60 * 24 * 365) : 2;
-                  const uptime = Math.max(100, Math.round(500 + ageYears * 900 + errorCount * 3));
+                      const status: 'Pending Review' | 'Acknowledged' | 'Action Scheduled' | 'Resolved' | 'False Positive' =
+                        openMaint > 0 ? 'Action Scheduled' : 'Pending Review';
 
-                  return {
-                    id: `PRED-${assetId}`,
-                    assetId,
-                    assetName: asset.name,
-                    assetType: asset.type,
-                    department: asset.department,
-                    predictionType,
-                    confidenceScore: Number(confidenceScore.toFixed(1)),
-                    predictedDate,
-                    daysUntilAction: daysUntil,
-                    severity,
-                    status,
-                    description: hasCriticalIssue
-                      ? `Open critical issue detected for this asset. Immediate investigation recommended.`
-                      : `Asset health is "${health}". Monitoring indicates potential degradation based on current state.`,
-                    recommendedAction: openMaint > 0
-                      ? 'Maintenance is already scheduled. Ensure parts and technician availability, then complete diagnostics.'
-                      : health === 'Needs Attention'
-                        ? 'Schedule immediate inspection and preventive maintenance.'
-                        : health === 'Fair'
-                          ? 'Schedule maintenance within 2 weeks. Monitor for further degradation.'
-                          : 'Plan routine maintenance in next scheduled cycle.',
-                    historicalData: {
-                      uptime,
-                      avgTemperature,
-                      errorCount,
-                      lastMaintenance: asset.purchaseDate || 'N/A',
-                    },
-                    createdAt: new Date().toISOString().split('T')[0],
-                  };
+                      const errorCount = openIssues + (health === 'Needs Attention' ? 25 : health === 'Fair' ? 8 : 2);
+                      const avgTemperature = health === 'Needs Attention' ? 82 : health === 'Fair' ? 68 : 55;
+
+                      const purchase = asset.purchaseDate ? new Date(asset.purchaseDate) : null;
+                      const ageYears = purchase
+                        ? (Date.now() - purchase.getTime()) / (1000 * 60 * 60 * 24 * 365)
+                        : 2;
+                      const uptime = Math.max(100, Math.round(500 + ageYears * 900 + errorCount * 3));
+
+                      const riskLine = `ML 30d risk score: ${confidenceScore}%. `;
+
+                      return {
+                        id: `PRED-${assetId}`,
+                        assetId,
+                        assetName: asset.name,
+                        assetType: asset.type,
+                        department: asset.department,
+                        mlPowered: Boolean(mlProbs),
+                        predictionType,
+                        confidenceScore: Number(confidenceScore.toFixed(1)),
+                        predictedDate,
+                        daysUntilAction: daysUntil,
+                        severity,
+                        status,
+                        description: hasCriticalIssue
+                          ? `${riskLine}Open critical issue detected. Immediate investigation recommended.`
+                          : `${riskLine}Asset health is "${health}". Monitoring indicates potential degradation.`,
+                        recommendedAction: openMaint > 0
+                          ? 'Maintenance is already scheduled. Ensure parts and technician availability, then complete diagnostics.'
+                          : health === 'Needs Attention'
+                            ? 'Schedule immediate inspection and preventive maintenance.'
+                            : health === 'Fair'
+                              ? 'Schedule maintenance within 2 weeks. Monitor for further degradation.'
+                              : 'Plan routine maintenance in next scheduled cycle.',
+                        historicalData: {
+                          uptime,
+                          avgTemperature,
+                          errorCount,
+                          lastMaintenance: asset.purchaseDate || 'N/A',
+                        },
+                        createdAt: new Date().toISOString().split('T')[0],
+                      };
+                    });
+
+                    predictions.sort((a, b) => {
+                      const order: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
+                      return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
+                    });
+
+                    res.json(predictions);
+                  });
                 });
-
-              predictions.sort((a, b) => {
-                const order: Record<string, number> = { Critical: 0, High: 1, Medium: 2, Low: 3 };
-                return (order[a.severity] ?? 4) - (order[b.severity] ?? 4);
               });
-
-              res.json(predictions);
-            }
-          );
-        }
-      );
+          });
     });
   });
 });

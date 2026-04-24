@@ -5,7 +5,8 @@ Asset Mart is a comprehensive IT Asset Management application designed to track 
 ## Technology Stack
 - **Frontend**: React, Vite, Tailwind CSS, Radix UI 
 - **Backend**: Node.js, Express.js, SQLite
-- **AI Integration**: Google Gemini API & OpenAI 
+- **AI Integration**: Google Gemini API & OpenAI
+- **Predictive risk (optional)**: Python, scikit-learn (see ML section above)
 
 ---
 
@@ -14,7 +15,7 @@ Asset Mart is a comprehensive IT Asset Management application designed to track 
 To get the project fully running locally, you will need to start both the Frontend application and the Backend API server in **two separate terminal windows**.
 
 ### Prerequisites
-Make sure you have [Node.js](https://nodejs.org/) installed on your machine.
+- [Node.js](https://nodejs.org/) for the app; Python 3.9+ optional for full ML risk scores on Predictive Maintenance.
 
 ### 1. Backend Setup (Database & API)
 The backend uses SQLite. When you start the server for the first time, it will automatically create the database (`database.sqlite`) and seed it with dummy data.
@@ -58,5 +59,12 @@ The backend uses SQLite. When you start the server for the first time, it will a
 - **Dashboard Overview**: View total assets, health status, and recent issues.
 - **AI Chatbot**: Intelligent chatbot powered by Gemini/OpenAI capable of context-aware interaction.
 - **Asset Management**: Full tracking of hardware inventory, warranty dates, and performance.
-- **Predictive Maintenance**: Identifies battery degradations, overheating risks, and parts wear based on AI scores.
+- **Predictive Maintenance**: ML-based 30-day risk scores (scikit-learn) from `ml/models/risk_30d.joblib`, with a heuristic if Python or the model is unavailable.
 - **Issue Tracking**: Submit tickets for broken hardware and upload screenshots.
+
+---
+
+## Predictive maintenance ML (summary)
+
+- Training CSV: `data/training_snapshots_5000_VALIDATED.csv` — train with `python -m pip install -r ml/requirements-ml.txt` then `python ml/train_risk_model.py` from the repo root.
+- Output: `ml/models/risk_30d.joblib`. Inference: `GET /api/maintenance/predictions` uses Python `ml/predict_risk.py` (set `PYTHON_PATH` if `python` is not on PATH on Windows).

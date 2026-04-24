@@ -105,7 +105,8 @@ Asset Mart is a comprehensive IT Asset Management application designed to track 
 ## Technology Stack
 - **Frontend**: React, Vite, Tailwind CSS, Radix UI 
 - **Backend**: Node.js, Express.js, SQLite
-- **AI Integration**: Google Gemini API & OpenAI 
+- **AI Integration**: Google Gemini API & OpenAI
+- **Predictive risk (optional)**: Python 3, pandas, scikit-learn — trains from `data/training_snapshots_5000_VALIDATED.csv`, serves scores via `ml/predict_risk.py`
 
 ---
 
@@ -114,7 +115,8 @@ Asset Mart is a comprehensive IT Asset Management application designed to track 
 To get the project fully running locally, you will need to start both the Frontend application and the Backend API server in **two separate terminal windows**.
 
 ### Prerequisites
-Make sure you have [Node.js](https://nodejs.org/) installed on your machine.
+- [Node.js](https://nodejs.org/) (frontend + backend)  
+- **Python 3.9+** (optional but recommended) for **predictive maintenance ML** scores. Without Python, the API still returns predictions using a built-in fallback.
 
 ### 1. Backend Setup (Database & API)
 The backend uses SQLite. When you start the server for the first time, it will automatically create the database (`database.sqlite`) and seed it with dummy data.
@@ -158,5 +160,35 @@ The backend uses SQLite. When you start the server for the first time, it will a
 - **Dashboard Overview**: View total assets, health status, and recent issues.
 - **AI Chatbot**: Intelligent chatbot powered by Gemini/OpenAI capable of context-aware interaction.
 - **Asset Management**: Full tracking of hardware inventory, warranty dates, and performance.
-- **Predictive Maintenance**: Identifies battery degradations, overheating risks, and parts wear based on AI scores.
+- **Predictive Maintenance**: Risk scores and timelines driven by a **trained ML model** (30‑day risk), with a rule-based fallback if Python or the model file is missing.
 - **Issue Tracking**: Submit tickets for broken hardware and upload screenshots.
+
+---
+
+## Predictive maintenance risk model (ML)
+
+The **Predictive Maintenance** screen uses `GET /api/maintenance/predictions`. The backend loads asset data plus issue and maintenance history from SQLite, builds the same feature shape as the training CSV, and runs a **scikit-learn** model to estimate **30‑day risk** (returned as `confidenceScore` 0–99). Each item includes `mlPowered: true` when the model ran, or `false` when a heuristic fallback is used.
+
+### Training data and layout
+
+- **Dataset (reference copy):** `data/training_snapshots_5000_VALIDATED.csv`  
+- **Scripts:** `ml/train_risk_model.py` (trains) · `ml/predict_risk.py` (inference, JSON stdin → probabilities)  
+- **Saved model (after training):** `ml/models/risk_30d.joblib` · metadata: `ml/models/risk_30d_meta.json`  
+- **Python dependencies:** `ml/requirements-ml.txt` (pandas, scikit-learn, joblib)
+
+### Train or refresh the model
+
+From the **repository root** (not `backend/`):
+
+```bash
+python -m pip install -r ml/requirements-ml.txt
+python ml/train_risk_model.py
+```
+
+This reads the CSV in `data/`, fits a **RandomForest** pipeline, and overwrites the joblib in `ml/models/`. Retrain when you change the training file or want to improve on real production data.
+
+### Runtime (Node + Python)
+
+- The API resolves the project root, runs `python ml/predict_risk.py` with a JSON array of feature rows, and maps **class-1 probability** to the UI score.  
+- If the model file is missing or Python fails, responses still work using the **heuristic** path (`mlPowered: false`).  
+- On Windows, if `python` is not on `PATH`, set the **`PYTHON_PATH`** environment variable to your Python executable (e.g. `C:\Python311\python.exe`) when starting the backend.
